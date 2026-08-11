@@ -2,7 +2,8 @@
 pragma solidity ^0.8.20;
 
 import "./SoulboundBadge.sol";
-import "./Level1_Reentrancy.sol";
+import "./Level2_Reentrancy.sol";
+import "./Level1_AccessControl.sol";
 
 contract CTFFactory {
     SoulboundBadge public badgeContract;
@@ -18,11 +19,10 @@ contract CTFFactory {
     }
 
     function deployLevel1() external payable returns (address) {
-        require(msg.value == 0.01 ether, "Must fund the level instance with 0.01 ETH");
+        require(msg.value == 0.02 ether, "Must fund the level instance with 0.02 ETH");
         require(levelInstances[1][msg.sender] == address(0), "Instance already deployed");
 
-        bytes32 salt = keccak256(abi.encodePacked(msg.sender, uint256(1)));
-        Level1_Reentrancy instance = new Level1_Reentrancy{salt: salt, value: msg.value}();
+        Level1_AccessControl instance = new Level1_AccessControl{value: msg.value}();
         
         levelInstances[1][msg.sender] = address(instance);
         
@@ -35,7 +35,7 @@ contract CTFFactory {
         require(instanceAddress != address(0), "Instance not deployed");
         require(!isSolved[1][msg.sender], "Level already solved");
 
-        Level1_Reentrancy instance = Level1_Reentrancy(instanceAddress);
+        Level1_AccessControl instance = Level1_AccessControl(instanceAddress);
         
         require(instance.isComplete(), "Hack incomplete: Contract not drained");
 
@@ -43,5 +43,34 @@ contract CTFFactory {
         badgeContract.mintBadge(msg.sender, 1);
         
         emit LevelSolved(msg.sender, 1);
+    }
+
+    function deployLevel2() external payable returns (address) {
+        require(isSolved[1][msg.sender], "Must solve Level 1 first");
+        require(msg.value == 0.01 ether, "Must fund the level instance with 0.01 ETH");
+        require(levelInstances[2][msg.sender] == address(0), "Instance already deployed");
+
+        bytes32 salt = keccak256(abi.encodePacked(msg.sender, uint256(2)));
+        Level2_Reentrancy instance = new Level2_Reentrancy{salt: salt, value: msg.value}();
+        
+        levelInstances[2][msg.sender] = address(instance);
+        
+        emit InstanceCreated(msg.sender, 2, address(instance));
+        return address(instance);
+    }
+
+    function validateLevel2() external {
+        address instanceAddress = levelInstances[2][msg.sender];
+        require(instanceAddress != address(0), "Instance not deployed");
+        require(!isSolved[2][msg.sender], "Level already solved");
+
+        Level2_Reentrancy instance = Level2_Reentrancy(instanceAddress);
+        
+        require(instance.isComplete(), "Hack incomplete: Contract not drained");
+
+        isSolved[2][msg.sender] = true;
+        badgeContract.mintBadge(msg.sender, 2);
+        
+        emit LevelSolved(msg.sender, 2);
     }
 }

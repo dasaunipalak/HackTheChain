@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-contract Level1_Reentrancy {
+contract Level2_Reentrancy {
     mapping(address => uint256) public balances;
     
     constructor() payable {

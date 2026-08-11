@@ -5,11 +5,20 @@ export const CTF_FACTORY_ADDRESS = '0x35b412Aa138104F9DA9b4B2Cc62D916f6974E12E';
 
 export const CTF_FACTORY_ABI = parseAbi([
   'function deployLevel1() external payable returns (address)',
+  'function deployLevel2() external payable returns (address)',
   'function levelInstances(uint256, address) view returns (address)',
-  'function validateLevel1() external'
+  'function isSolved(uint256, address) view returns (bool)',
+  'function validateLevel1() external',
+  'function validateLevel2() external'
 ]);
 
 export const LEVEL1_ABI = parseAbi([
+  'function withdrawAll(address recipient) external',
+  'function owner() external view returns (address)',
+  'function isComplete() external view returns (bool)'
+]);
+
+export const LEVEL2_ABI = parseAbi([
   'function donate(address _to) external payable',
   'function withdraw() external',
   'function isComplete() external view returns (bool)'
