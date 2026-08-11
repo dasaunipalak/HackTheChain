@@ -7,3 +7,9 @@ node_modules/
 contracts/cache/
 contracts/out/
 contracts/broadcast/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
