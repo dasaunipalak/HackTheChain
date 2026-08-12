@@ -27,7 +27,8 @@ export const LEVEL1_ABI = parseAbi([
 export const LEVEL2_ABI = parseAbi([
   'function donate(address _to) external payable',
   'function withdraw() external',
-  'function isComplete() external view returns (bool)'
+  'function isComplete() external view returns (bool)',
+  'function balances(address) external view returns (uint256)'
 ]);
 
 export const ATTACKER_ABI = parseAbi([

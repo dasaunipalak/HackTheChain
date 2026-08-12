@@ -30,6 +30,60 @@ contract Level1_AccessControl {
     }
 }`;
 
+const LEVEL2_SOURCE_CODE = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract Level2_Reentrancy {
+    mapping(address => uint256) public balances;
+    
+    constructor() payable {
+        balances[address(this)] = msg.value;
+    }
+
+    function donate(address _to) external payable {
+        balances[_to] += msg.value;
+    }
+
+    function withdraw() external {
+        uint256 amount = balances[msg.sender];
+        require(amount > 0, "No balance");
+
+        (bool success, ) = msg.sender.call{value: amount}("");
+        require(success, "Transfer failed");
+
+        balances[msg.sender] = 0; 
+    }
+    
+    function isComplete() external view returns (bool) {
+        return address(this).balance == 0;
+    }
+}`;
+
+const LEVEL2_SKELETON = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface IVulnerable {
+    function donate(address _to) external payable;
+    function withdraw() external;
+}
+
+contract ReentrancyAttack {
+    IVulnerable public target;
+    address public owner;
+
+    constructor(address _target) {
+        // TODO
+    }
+
+    function attack() external payable {
+        // TODO
+    }
+
+    receive() external payable {
+        // TODO
+    }
+}`;
+
 const LEVEL_DATA = [
   { id: 1, title: 'ACCESS CONTROL' },
   { id: 2, title: 'REENTRANCY' },
@@ -111,6 +165,7 @@ export default function Home() {
   // Level 2 Local State
   const [attackerInput, setAttackerInput] = useState('');
   const [registeredAttacker, setRegisteredAttacker] = useState('');
+  const [l2AttackAmount, setL2AttackAmount] = useState('0.001');
 
   // Level 3 Local State
   const [l3SwapAmount, setL3SwapAmount] = useState('0.1');
@@ -591,43 +646,96 @@ export default function Home() {
                 </div>
               ) : selectedLevel === 2 ? (
                 <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">REENTRANCY ATTACK</h2>
                   
-                  <div className="flex flex-col flex-grow">
+                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">LIVE CONTRACT STATE</h2>
+                  <div className="flex flex-col gap-2.5 text-[10px] sm:text-xs mb-6 font-mono">
+                    <div className="flex justify-between">
+                      <span className="opacity-70 tracking-widest">TARGET BALANCE</span>
+                      <span>{targetBalance ? `${formatEther(targetBalance.value)} ETH` : '---'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="opacity-70 tracking-widest">PLAYER ADDRESS</span>
+                      <span>{address || '---'}</span>
+                    </div>
+                  </div>
+
+                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">CONTRACT SOURCE</h2>
+                  <div className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 mb-6 overflow-x-auto text-[10px] font-mono leading-relaxed whitespace-pre">
+                    {LEVEL2_SOURCE_CODE}
+                  </div>
 
 
-                    <div className="flex flex-col gap-4 text-xs font-mono tracking-wide mb-8">
-                      <div className="flex flex-col gap-1">
-                        <span className="opacity-70 text-[10px] tracking-widest">TARGET INTERFACE</span>
-                        <span className="text-[#00ff00] p-2 bg-[#00ff00]/10 border border-[#00ff00]/30 break-all mb-1">donate(address to)</span>
-                        <span className="text-[#00ff00] p-2 bg-[#00ff00]/10 border border-[#00ff00]/30 break-all">withdraw()</span>
+                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">BUILD YOUR ATTACK CONTRACT</h2>
+                  <p className="opacity-80 text-xs leading-relaxed mb-4">
+                    Analyze the target contract and construct your own attack contract.
+                  </p>
+                  
+                  <div className="flex justify-end mb-2">
+                    <button onClick={() => copyToClipboard(LEVEL2_SKELETON)} className="px-3 py-1 border border-[#00ff00] hover:bg-[#00ff00]/20 text-[10px] tracking-widest">
+                      [ COPY SKELETON ]
+                    </button>
+                  </div>
+                  <div className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 mb-6 overflow-x-auto text-[10px] font-mono leading-relaxed whitespace-pre">
+                    {LEVEL2_SKELETON}
+                  </div>
+
+
+
+                  {!registeredAttacker ? (
+                    <div className="flex flex-col gap-2 mt-auto">
+                      <label className="text-[10px] tracking-widest opacity-70">ATTACK CONTRACT ADDRESS</label>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <input type="text" value={attackerInput} onChange={(e) => setAttackerInput(e.target.value)} placeholder="0x..." className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all min-w-0" />
+                        <button onClick={handleRegisterAttacker} className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors font-bold text-xs tracking-widest whitespace-nowrap">
+                          [ REGISTER CONTRACT ]
+                        </button>
                       </div>
                     </div>
-
-                    {!registeredAttacker ? (
-                      <div className="flex flex-col gap-2 mt-auto">
-                        <label className="text-[10px] tracking-widest opacity-70">ATTACKER CONTRACT ADDRESS</label>
-                        <div className="flex flex-col sm:flex-row gap-3">
-                          <input type="text" value={attackerInput} onChange={(e) => setAttackerInput(e.target.value)} placeholder="0x..." className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all min-w-0" />
-                          <button onClick={handleRegisterAttacker} className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors font-bold text-xs tracking-widest whitespace-nowrap">
-                            [ REGISTER ]
-                          </button>
-                        </div>
+                  ) : (
+                    <div className="flex flex-col h-full gap-4 border border-[#00ff00] p-4 bg-[#00ff00]/10">
+                      <div className="flex flex-col border-b border-[#00ff00]/30 pb-2 gap-1">
+                        <span className="text-xs font-bold tracking-widest text-[#00ff00]">ATTACK CONTRACT REGISTERED ✓</span>
+                        <span className="font-mono text-[10px] break-all opacity-70">Registered:<br/>{registeredAttacker}</span>
                       </div>
-                    ) : (
-                      <div className="flex flex-col h-full gap-4 border border-[#00ff00] p-4 bg-[#00ff00]/10">
-                        <div className="flex justify-between items-center border-b border-[#00ff00]/30 pb-2">
-                          <span className="text-xs font-bold tracking-widest">ATTACKER INTERFACE</span>
-                          <span className="font-mono text-[10px] break-all max-w-[150px]">{registeredAttacker}</span>
+                      <div className="flex-grow flex flex-col gap-4">
+                        <div className="font-mono text-xs text-[#00ff00]">attack()</div>
+                        <div className="flex flex-col gap-2">
+                          <label className="text-[10px] tracking-widest opacity-70">ETH AMOUNT TO SEND</label>
+                          <input 
+                            type="text" 
+                            value={l2AttackAmount} 
+                            onChange={(e) => setL2AttackAmount(e.target.value)} 
+                            placeholder="0.001" 
+                            className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-2 outline-none focus:border-[#00ff00] font-mono text-xs transition-all w-full" 
+                          />
                         </div>
-                        <div className="flex-grow flex items-end">
-                          <button onClick={() => executeGenericTx(registeredAttacker as `0x${string}`, ATTACKER_ABI, 'attack', [], '0.001', 'attack')} disabled={isExploiting} className="w-full px-4 py-4 bg-transparent border-2 border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-all font-bold text-base disabled:opacity-50 disabled:animate-none tracking-widest break-words">
-                            {isExploiting ? '[ SUBMITTING... ]' : '[ CALL attack() ]'}
-                          </button>
-                        </div>
+                        <button onClick={async () => {
+                          const amt = Number(l2AttackAmount);
+                          if (isNaN(amt) || amt <= 0) {
+                            addLog("> ERROR: INVALID ETH AMOUNT");
+                            return;
+                          }
+                          addLog(`> CALL attacker.attack() [VALUE: ${l2AttackAmount} ETH]`);
+                          const success = await executeGenericTx(registeredAttacker as `0x${string}`, ATTACKER_ABI, 'attack', [], l2AttackAmount, 'attack');
+                          if (success && publicClient && targetAddress) {
+                            try {
+                              const isCompleteRes = await publicClient.readContract({
+                                address: targetAddress,
+                                abi: LEVEL2_ABI,
+                                functionName: 'isComplete'
+                              });
+                              if (isCompleteRes) {
+                                addLog('> ATTACK_EXECUTED ✓\n> LEVEL_02_COMPLETE ✓');
+                                handleVerifyHack();
+                              }
+                            } catch (e) {}
+                          }
+                        }} disabled={isExploiting} className="w-full px-4 py-4 mt-auto bg-transparent border-2 border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-all font-bold text-base disabled:opacity-50 tracking-widest break-words">
+                          {isExploiting ? '[ SUBMITTING... ]' : '[ EXECUTE attack() ]'}
+                        </button>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               ) : selectedLevel === 3 ? (
                 <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
