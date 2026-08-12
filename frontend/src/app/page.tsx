@@ -7,7 +7,7 @@ import { parseEther, formatEther, isAddress, encodeFunctionData } from 'viem';
 import { 
   CTF_FACTORY_ADDRESS, CTF_FACTORY_ABI, 
   LEVEL1_ABI, LEVEL2_ABI, ATTACKER_ABI,
-  LEVEL3_ABI, LEVEL3_AMM_ABI, LEVEL3_ORACLE_ABI,
+  LEVEL3_ABI, LEVEL3_AMM_ABI, LEVEL3_ORACLE_ABI, MOCK_TOKEN_ABI,
   LEVEL4_ABI, LEVEL5_ABI 
 } from './config';
 
@@ -123,6 +123,11 @@ export default function Home() {
     address: l3OracleRaw as `0x${string}`, abi: LEVEL3_ORACLE_ABI, functionName: 'getPrice',
     query: { enabled: !!l3OracleRaw && selectedLevel === 3 }
   });
+  const { data: l3PlayerMktBalanceRaw, refetch: refetchL3PlayerMktBalance } = useReadContract({
+    address: l3TokenRaw as `0x${string}`, abi: MOCK_TOKEN_ABI, functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled: !!l3TokenRaw && !!address && selectedLevel === 3 }
+  });
 
   // L4 Reads
   const { data: l4SignerRaw, refetch: refetchL4Signer } = useReadContract({
@@ -212,7 +217,7 @@ export default function Home() {
   const refetchAll = async () => {
     refetchBalance(); refetchIsComplete();
     if (selectedLevel === 1) refetchOwner();
-    if (selectedLevel === 3) { refetchL3Token(); refetchL3Amm(); refetchL3Oracle(); refetchL3OraclePrice(); }
+    if (selectedLevel === 3) { refetchL3Token(); refetchL3Amm(); refetchL3Oracle(); refetchL3OraclePrice(); refetchL3PlayerMktBalance(); }
     if (selectedLevel === 4) { refetchL4Signer(); }
     if (selectedLevel === 5) { refetchL5Impl(); refetchL5Owner(); }
   };
@@ -243,19 +248,33 @@ export default function Home() {
   // Level 3 Derived State
   const l3HasClaimed = currentLogs.some(l => l.includes('AIRDROP_CONFIRMED ✓'));
   const l3HasManipulated = currentLogs.some(l => l.includes('AMM_SWAP_CONFIRMED ✓'));
+  const l3HasApproved = currentLogs.some(l => l.includes('APPROVE_CONFIRMED ✓'));
   const l3HasDeposited = currentLogs.some(l => l.includes('DEPOSIT_CONFIRMED ✓'));
+  const l3MktBalance = l3PlayerMktBalanceRaw as bigint | undefined;
 
   // Level 4 Signature Endpoint
-  const requestLevel4Signature = async (instance: string, player: string, amount: string) => {
+  const requestLevel4Signature = async (instanceAddress: string, playerAddress: string, amount: string) => {
     setIsRequestingSignature(true);
     try {
       addLog('> REQUESTING_SIGNATURE_FROM_BACKEND');
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        addLog('> ERROR: SIGNATURE SERVICE NOT CONNECTED');
+      const res = await fetch('/api/level4-signature', {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+              instanceAddress,
+              playerAddress,
+              amount: parseEther(amount).toString()
+          })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addLog(`> ERROR: ${data.error || 'Failed to fetch signature'}`);
         return;
       }
-      addLog('> ERROR: BACKEND NOT IMPLEMENTED YET');
+      addLog(`> SIGNATURE_ACQUIRED ✓`);
+      setL4Signature(data.signature);
     } catch (e: any) {
       addLog(`> ERROR: ${e.shortMessage || e.message}`);
     } finally {
@@ -456,11 +475,14 @@ export default function Home() {
                     <button onClick={() => l3AmmRaw && executeGenericTx(l3AmmRaw as `0x${string}`, LEVEL3_AMM_ABI, 'swapETHForTokens', [], '0.1', 'AMM_SWAP')} disabled={isExploiting || !l3AmmRaw || !l3HasClaimed || l3HasManipulated} className={`p-3 border text-xs tracking-widest ${l3HasClaimed && !l3HasManipulated ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
                       [ 2. MANIPULATE AMM (Send 0.1 ETH) ]
                     </button>
-                    <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'deposit', [], '0', 'DEPOSIT')} disabled={isExploiting || !l3HasManipulated || l3HasDeposited} className={`p-3 border text-xs tracking-widest ${l3HasManipulated && !l3HasDeposited ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                      [ 3. DEPOSIT MANIPULATED COLLATERAL ]
+                    <button onClick={() => l3TokenRaw && l3MktBalance !== undefined && executeGenericTx(l3TokenRaw as `0x${string}`, MOCK_TOKEN_ABI, 'approve', [targetAddress, l3MktBalance], '0', 'APPROVE')} disabled={isExploiting || !l3TokenRaw || !l3HasManipulated || l3HasApproved} className={`p-3 border text-xs tracking-widest ${l3HasManipulated && !l3HasApproved ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
+                      [ 3. APPROVE COLLATERAL ]
                     </button>
-                    <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'borrow', [], '0', 'BORROW')} disabled={isExploiting || !l3HasDeposited} className={`p-3 border text-xs tracking-widest ${l3HasDeposited ? 'border-red-500 text-red-500 hover:bg-red-500/20 animate-pulse' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                      [ 4. BORROW EXCESSIVE ETH ]
+                    <button onClick={() => l3MktBalance !== undefined && executeGenericTx(targetAddress, LEVEL3_ABI, 'deposit', [l3MktBalance], '0', 'DEPOSIT')} disabled={isExploiting || !l3HasApproved || l3HasDeposited} className={`p-3 border text-xs tracking-widest ${l3HasApproved && !l3HasDeposited ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
+                      [ 4. DEPOSIT MANIPULATED COLLATERAL ]
+                    </button>
+                    <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'borrow', [parseEther('0.1')], '0', 'BORROW')} disabled={isExploiting || !l3HasDeposited} className={`p-3 border text-xs tracking-widest ${l3HasDeposited ? 'border-red-500 text-red-500 hover:bg-red-500/20 animate-pulse' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
+                      [ 5. BORROW EXCESSIVE ETH ]
                     </button>
                   </div>
                 </div>

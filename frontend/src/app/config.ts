@@ -36,12 +36,17 @@ export const ATTACKER_ABI = parseAbi([
 
 export const LEVEL3_ABI = parseAbi([
   'function claimAirdrop() external',
-  'function deposit() external',
-  'function borrow() external',
+  'function deposit(uint256 amount) external',
+  'function borrow(uint256 borrowAmount) external',
   'function token() external view returns (address)',
   'function amm() external view returns (address)',
   'function oracle() external view returns (address)',
   'function isComplete() external view returns (bool)'
+]);
+
+export const MOCK_TOKEN_ABI = parseAbi([
+  'function approve(address spender, uint256 amount) external returns (bool)',
+  'function balanceOf(address account) external view returns (uint256)'
 ]);
 
 export const LEVEL3_AMM_ABI = parseAbi([
