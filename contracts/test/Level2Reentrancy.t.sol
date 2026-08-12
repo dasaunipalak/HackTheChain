@@ -31,7 +31,7 @@ contract Level2ReentrancyTest is Test {
     address public player = address(0x1234);
 
     function setUp() public {
-        factory = new CTFFactory();
+        factory = new CTFFactory(address(0x1111222233334444555566667777888899990000));
         vm.deal(player, 1 ether);
     }
 
@@ -46,7 +46,7 @@ contract Level2ReentrancyTest is Test {
         vm.startPrank(player);
 
         // 1. Solve Level 1 to unlock Level 2
-        address l1InstanceAddr = factory.deployLevel1{value: 0.02 ether}();
+        address l1InstanceAddr = factory.deployLevel1{value: 0.01 ether}();
         Level1_AccessControl l1Target = Level1_AccessControl(l1InstanceAddr);
         l1Target.withdrawAll(payable(player));
         factory.validateLevel1();

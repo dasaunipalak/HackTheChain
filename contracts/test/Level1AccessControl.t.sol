@@ -10,7 +10,7 @@ contract Level1AccessControlTest is Test {
     address public player = address(0x1234);
 
     function setUp() public {
-        factory = new CTFFactory();
+        factory = new CTFFactory(address(0x1111222233334444555566667777888899990000));
         vm.deal(player, 1 ether);
     }
 
@@ -18,8 +18,8 @@ contract Level1AccessControlTest is Test {
         vm.startPrank(player);
 
         // 1. Deploy Level 1 instance ( funded with 0.02 ETH )
-        address instanceAddr = factory.deployLevel1{value: 0.02 ether}();
-        assertEq(instanceAddr.balance, 0.02 ether, "Instance not funded");
+        address instanceAddr = factory.deployLevel1{value: 0.01 ether}();
+        assertEq(instanceAddr.balance, 0.01 ether, "Instance not funded");
         assertEq(factory.levelInstances(1, player), instanceAddr, "Instance not mapped to player");
 
         // 2. Exploit: Player calls withdrawAll on the vulnerable contract
