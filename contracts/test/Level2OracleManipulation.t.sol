@@ -136,7 +136,7 @@ contract Level2OracleManipulationTest is Test {
 
         assertEq(
             trace.balanceOf(player),
-            1 ether
+            10 ether
         );
 
         Level1_Reentrancy level1 =
@@ -150,14 +150,14 @@ contract Level2OracleManipulationTest is Test {
                 trace
             );
 
-        // Give attacker 1 TRC.
+        // Give attacker 10 TRC.
         trace.transfer(
             address(attacker),
-            1 ether
+            10 ether
         );
 
         attacker.attack(
-            1 ether
+            10 ether
         );
 
         assertEq(
@@ -234,7 +234,7 @@ contract Level2OracleManipulationTest is Test {
         //
         // Therefore:
         //
-        // 1 MKT = 1 TRC
+        // 1 MKT = 10 TRC
 
         assertEq(
             oracle.getPrice(),

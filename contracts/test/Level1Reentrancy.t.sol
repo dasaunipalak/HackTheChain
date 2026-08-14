@@ -63,10 +63,10 @@ contract Level1ReentrancyTest is Test {
         address instanceAddress =
             factory.deployLevel1();
 
-        // Player gets 1 TRC
+        // Player gets 10 TRC
         assertEq(
             trace.balanceOf(player),
-            1 ether
+            10 ether
         );
 
         Level1_Reentrancy vault =
@@ -85,14 +85,14 @@ contract Level1ReentrancyTest is Test {
                 trace
             );
 
-        // Give attacker 1 TRC
+        // Give attacker 10 TRC
         trace.transfer(
             address(attacker),
-            1 ether
+            10 ether
         );
 
         // Execute reentrancy attack
-        attacker.attack(1 ether);
+        attacker.attack(10 ether);
 
         // Vault should be completely drained
         assertEq(

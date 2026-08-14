@@ -59,13 +59,13 @@ contract CTFFactory {
             100 ether
         );
 
-        // Give the player 1 TRC to fund their attacker contract.
+        // Give the player 10 TRC to fund their attacker contract.
         if (!level1StarterClaimed[msg.sender]) {
             level1StarterClaimed[msg.sender] = true;
 
             trace.mint(
                 msg.sender,
-                1 ether
+                10 ether
             );
         }
 
@@ -186,7 +186,7 @@ contract CTFFactory {
         // 10 TRC
         //
         // Initial price:
-        // 1 MKT = 1 TRC
+        // 1 MKT = 10 TRC
         // --------------------------------------
 
         mkt.approve(

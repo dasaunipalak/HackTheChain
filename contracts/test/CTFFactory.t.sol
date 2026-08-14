@@ -171,10 +171,10 @@ contract CTFFactoryTest is Test {
         address instanceAddress =
             factory.deployLevel1();
 
-        // Player gets 1 TRC.
+        // Player gets 10 TRC.
         assertEq(
             trace.balanceOf(player),
-            1 ether
+            10 ether
         );
 
         Level1_Reentrancy vault =
@@ -197,12 +197,12 @@ contract CTFFactoryTest is Test {
 
         trace.transfer(
             address(attacker),
-            1 ether
+            10 ether
         );
 
         // Execute reentrancy attack.
         attacker.attack(
-            1 ether
+            10 ether
         );
 
         // Vault should be empty.
@@ -263,14 +263,14 @@ contract CTFFactoryTest is Test {
                 trace
             );
 
-        // Give attacker 1 TRC.
+        // Give attacker 10 TRC.
         trace.transfer(
             address(attacker),
-            1 ether
+            10 ether
         );
 
         attacker.attack(
-            1 ether
+            10 ether
         );
 
         factory.validateLevel1();
@@ -454,11 +454,11 @@ contract CTFFactoryTest is Test {
 
         trace.transfer(
             address(attacker),
-            1 ether
+            10 ether
         );
 
         attacker.attack(
-            1 ether
+            10 ether
         );
 
         factory.validateLevel1();

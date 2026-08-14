@@ -99,6 +99,65 @@ contract Attacker {
     }
 }`;
 
+const LEVEL2_SKELETON = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface ILevel2 {
+    function deposit(uint256 amount) external;
+    function borrow(uint256 amount) external;
+    function mkt() external view returns (address);
+    function trace() external view returns (address);
+    function oracle() external view returns (address);
+}
+
+interface IERC20 {
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+interface IOracle {
+    function amm() external view returns (address);
+}
+
+interface IAMM {
+    function swapTRACEForMKT(uint256 amountIn) external;
+}
+
+contract Attacker {
+    ILevel2 public vault;
+
+    constructor(address _vault) {
+        // TODO: Initialize the target
+    }
+
+    function attack() external {
+        // TODO: Exploit the target
+}
+`;
+
+const LEVEL3_SKELETON = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface ILevel3 {
+    function withdraw(
+        address recipient,
+        uint256 amount,
+        bytes calldata signature
+    ) external;
+}
+
+contract Attacker {
+    ILevel3 public vault;
+
+    constructor(address _vault) {
+        // TODO: Initialize the target
+    }
+
+    function attack(bytes memory signature) external {
+        // TODO: Exploit the target
+    }
+}`;
+
 const LEVEL_DATA = [
   { id: 1, title: 'REENTRANCY' },
   { id: 2, title: 'ORACLE MANIPULATION' },
@@ -182,6 +241,10 @@ export default function Home() {
     functionName: 'trace',
   });
   const factoryTraceAddress = factoryTraceAddressRaw as `0x${string}` | undefined;
+  const [l1AttackerInput, setL1AttackerInput] = useState('');
+  const [isL1Funding, setIsL1Funding] = useState(false);
+  const [l2AttackerInput, setL2AttackerInput] = useState('');
+  const [isL2Funding, setIsL2Funding] = useState(false);
 
   // --------------------------------------------------------
   // LEVEL 2: ORACLE MANIPULATION STATE
@@ -250,6 +313,69 @@ export default function Home() {
   const [isInitializing, setIsInitializing] = useState(false);
   const [isExploiting, setIsExploiting] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+
+  const handleFundL1Attacker = async () => {
+    if (!address) return addLog('> ERROR: WALLET_NOT_CONNECTED');
+    if (!factoryTraceAddress) return addLog('> ERROR: TRACE ADDRESS NOT FOUND');
+    if (!isAddress(l1AttackerInput) || l1AttackerInput === '0x0000000000000000000000000000000000000000') {
+      return addLog('> ERROR: INVALID ATTACKER ADDRESS');
+    }
+
+    setIsL1Funding(true);
+    try {
+      addLog('> FUNDING_ATTACKER');
+      const hash = await writeContractAsync({
+        address: factoryTraceAddress,
+        abi: TRACE_ABI,
+        functionName: 'transfer',
+        args: [l1AttackerInput, parseEther('10')]
+      });
+      addLog(`> TX_SUBMITTED: ${hash.slice(0, 10)}...`);
+      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
+      if (receipt?.status === 'success') {
+        addLog('> ATTACKER_FUNDED: 10 TRC');
+      } else {
+        addLog('> ATTACKER_FUNDING_FAILED');
+      }
+    } catch (e: any) {
+      addLog('> ATTACKER_FUNDING_FAILED');
+      addLog(`> ERROR: ${e.shortMessage || e.message}`);
+    } finally {
+      setIsL1Funding(false);
+    }
+  };
+
+  const handleFundL2Attacker = async () => {
+    setIsL2Funding(true);
+    try {
+      addLog(`> TRANSFERRING ASSETS TO ATTACKER...`);
+      
+      const hash1 = await writeContractAsync({
+        address: l2MktAddress as `0x${string}`,
+        abi: MKT_ABI,
+        functionName: 'transfer',
+        args: [l2AttackerInput as `0x${string}`, parseEther('10')]
+      });
+      addLog(`> TX 1 (10 MKT) SUBMITTED: ${hash1.slice(0, 10)}...`);
+      await publicClient?.waitForTransactionReceipt({ hash: hash1 });
+      
+      const hash2 = await writeContractAsync({
+        address: factoryTraceAddress as `0x${string}`,
+        abi: TRACE_ABI,
+        functionName: 'transfer',
+        args: [l2AttackerInput as `0x${string}`, parseEther('40')]
+      });
+      addLog(`> TX 2 (40 TRC) SUBMITTED: ${hash2.slice(0, 10)}...`);
+      await publicClient?.waitForTransactionReceipt({ hash: hash2 });
+
+      addLog('> ATTACKER_FUNDED: 10 MKT, 40 TRC');
+    } catch (e: any) {
+      addLog('> ATTACKER_FUNDING_FAILED');
+      addLog(`> ERROR: ${e.shortMessage || e.message}`);
+    } finally {
+      setIsL2Funding(false);
+    }
+  };
 
   const executeGenericTx = async (target: `0x${string}`, abi: any, functionName: string, args: any[] = [], value: string = '0', logName: string = functionName) => {
     setIsExploiting(true);
@@ -463,7 +589,7 @@ export default function Home() {
                   </div>
 
                   <p className="text-xs mb-6 opacity-80 leading-relaxed max-w-2xl">
-                    Analyze the target contract and find a way to drain the vault's 100 TRC. Use the provided attacker skeleton to build your exploit in Remix. Fund your attacker contract as needed, execute the attack, and return here once the vault balance reaches zero
+                    Analyze the target contract and find a way to drain the vault's 100 TRC. Use the provided attacker skeleton to build your exploit in Remix. Deploy your attacker contract, fund it using the interface below, execute the attack, and return here once the vault balance reaches zero.
                   </p>
 
                   <div className="flex flex-col gap-4 mb-6">
@@ -490,6 +616,26 @@ export default function Home() {
                     </div>
                   </div>
 
+                  <div className="flex flex-col gap-2 mt-auto">
+                    <label className="text-[10px] tracking-widest opacity-70">ATTACKER CONTRACT</label>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <input
+                        type="text"
+                        value={l1AttackerInput}
+                        onChange={(e) => setL1AttackerInput(e.target.value)}
+                        placeholder="Enter deployed attacker address"
+                        className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all min-w-0"
+                      />
+                      <button
+                        onClick={handleFundL1Attacker}
+                        disabled={isL1Funding || !l1AttackerInput || !factoryTraceAddress}
+                        className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors font-bold text-xs tracking-widest whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isL1Funding ? '[ FUNDING... ]' : '[ FUND ATTACKER WITH 10 TRC ]'}
+                      </button>
+                    </div>
+                  </div>
+
                   {isComplete && (
                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
                       {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
@@ -498,55 +644,73 @@ export default function Home() {
                 </div>
               ) : selectedLevel === 2 ? (
                 <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">MARKET MANIPULATION CONSOLE</h2>
+                  <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">ORACLE MANIPULATION</h2>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
-                      <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">MARKET STATE (AMM)</div>
-                      <div className="flex justify-between text-xs"><span>MKT RESERVE:</span> <span>{l2AmmReserveMkt ? formatEther(l2AmmReserveMkt) : '---'} MKT</span></div>
-                      <div className="flex justify-between text-xs"><span>TRC RESERVE:</span> <span>{l2AmmReserveTrace ? formatEther(l2AmmReserveTrace) : '---'} TRC</span></div>
-                      <div className="flex justify-between text-xs font-bold text-yellow-400 mt-1 border-t border-[#00ff00]/20 pt-1"><span>ORACLE PRICE:</span> <span>{l2OraclePrice ? formatEther(l2OraclePrice) : '---'} TRC / MKT</span></div>
+                  <p className="text-xs mb-6 opacity-80 leading-relaxed">
+                    The target vault uses an AMM spot price to value collateral. Write an attacker contract that manipulates the AMM price, deposits collateral, and drains the vault.
+                  </p>
+
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TARGET INSTANCE</span>
+                      <span className="font-mono text-xs">{targetAddress}</span>
                     </div>
-
-                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
-                      <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">PLAYER BALANCES</div>
-                      <div className="flex justify-between text-xs"><span>MKT (Collateral):</span> <span>{l2PlayerMkt ? formatEther(l2PlayerMkt) : '---'} MKT</span></div>
-                      <div className="flex justify-between text-xs"><span>TRC (Capital):</span> <span>{l2PlayerTrace ? formatEther(l2PlayerTrace) : '---'} TRC</span></div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">MKT TOKEN</span>
+                      <span className="font-mono text-xs">{l2MktAddress}</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TRACE TOKEN</span>
+                      <span className="font-mono text-xs">{factoryTraceAddress}</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">AMM</span>
+                      <span className="font-mono text-xs">{l2AmmAddress}</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">ORACLE</span>
+                      <span className="font-mono text-xs">{l2OracleAddress}</span>
                     </div>
                   </div>
 
-                  <div className="border border-red-500/50 p-3 bg-red-500/5 mb-6 flex justify-between items-center">
-                    <span className="text-[10px] text-red-500 tracking-widest font-bold">TARGET VAULT BALANCE</span>
-                    <span className="text-red-500 font-bold font-mono">{l2VaultTrace ? formatEther(l2VaultTrace) : '---'} TRC</span>
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">ATTACKER SKELETON</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(LEVEL2_SKELETON);
+                          addLog('> SKELETON_COPIED_TO_CLIPBOARD');
+                        }}
+                        className="text-[10px] border border-[#00ff00] hover:bg-[#00ff00] hover:text-black px-2 py-1 transition-colors"
+                      >
+                        [ COPY ]
+                      </button>
+                    </div>
+                    <textarea
+                      readOnly
+                      value={LEVEL2_SKELETON}
+                      className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-40 sm:h-48 resize-y outline-none focus:border-[#00ff00] transition-colors"
+                    />
                   </div>
 
-                  <div className="flex flex-col gap-3">
-                    <div className="text-[10px] opacity-70 tracking-widest">ATTACK SEQUENCE</div>
-
-                    {/* STEP 1 */}
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <button onClick={() => executeGenericTx(l2TraceAddress, TRACE_ABI, 'approve', [l2AmmAddress, parseEther('40')], '0', 'approve TRC')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
-                        1. [ APPROVE 40 TRC TO AMM ]
-                      </button>
-                      <button onClick={() => executeGenericTx(l2AmmAddress, LEVEL2_AMM_ABI, 'swapTRACEForMKT', [parseEther('40')], '0', 'swapTRACEForMKT')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
-                        2. [ SWAP 40 TRC FOR MKT ]
-                      </button>
-                    </div>
-
-                    {/* STEP 2 */}
-                    <div className="flex flex-col sm:flex-row gap-2 mt-2">
-                      <button onClick={() => executeGenericTx(l2MktAddress, MKT_ABI, 'approve', [targetAddress, parseEther('10')], '0', 'approve MKT')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
-                        3. [ APPROVE 10 MKT TO VAULT ]
-                      </button>
-                      <button onClick={() => executeGenericTx(targetAddress, LEVEL2_ABI, 'deposit', [parseEther('10')], '0', 'deposit')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
-                        4. [ DEPOSIT 10 MKT COLLATERAL ]
+                  <div className="flex flex-col gap-2 mb-6">
+                    <label className="text-[10px] tracking-widest opacity-70">ATTACKER CONTRACT</label>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <input
+                        type="text"
+                        value={l2AttackerInput}
+                        onChange={(e) => setL2AttackerInput(e.target.value)}
+                        placeholder="Enter deployed attacker address"
+                        className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all min-w-0"
+                      />
+                      <button
+                        onClick={handleFundL2Attacker}
+                        disabled={isL2Funding || !l2AttackerInput || !factoryTraceAddress || !l2MktAddress}
+                        className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors font-bold text-xs tracking-widest whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isL2Funding ? '[ FUNDING... ]' : '[ FUND ATTACKER WITH ASSETS ]'}
                       </button>
                     </div>
-
-                    {/* STEP 3 */}
-                    <button onClick={() => executeGenericTx(targetAddress, LEVEL2_ABI, 'borrow', [parseEther('100')], '0', 'borrow')} disabled={isExploiting} className="w-full border-2 border-red-500/50 hover:bg-red-500/20 text-red-500 p-4 text-xs tracking-widest font-bold mt-2">
-                      5. [ EXPLOIT: BORROW 100 TRC ]
-                    </button>
                   </div>
 
                   {isComplete && (
@@ -561,8 +725,19 @@ export default function Home() {
 
                   <p className="text-xs mb-6 opacity-80 leading-relaxed">
                     The backend signer provides valid signatures authorizing a 10 TRC withdrawal for your address.
-                    Since the signature is never invalidated (no nonce), you can replay it multiple times to drain the vault.
+                    Since the signature is never invalidated (no nonce), you can replay it multiple times to drain the vault. Write an attacker contract to exploit this via Remix.
                   </p>
+
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TARGET INSTANCE</span>
+                      <span className="font-mono text-xs">{targetAddress}</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TRACE TOKEN</span>
+                      <span className="font-mono text-xs">{l3TraceAddress as string}</span>
+                    </div>
+                  </div>
 
                   <div className="border border-red-500/50 p-3 bg-red-500/5 mb-6 flex justify-between items-center">
                     <span className="text-[10px] text-red-500 tracking-widest font-bold">TARGET VAULT BALANCE</span>
@@ -571,23 +746,46 @@ export default function Home() {
 
                   <div className="flex flex-col gap-4 mb-6">
                     <button onClick={handleRequestSignature} className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest">
-                      [ 1. REQUEST 10 TRC SIGNATURE FROM BACKEND ]
+                      [ REQUEST 10 TRC SIGNATURE FROM BACKEND ]
                     </button>
 
                     {l3Signature && (
-                      <div className="flex flex-col gap-2">
-                        <span className="text-[10px] tracking-widest opacity-70">VALID SIGNATURE</span>
-                        <textarea readOnly value={l3Signature} className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-2 font-mono text-[10px] break-all outline-none resize-none h-16" />
-
-                        <button
-                          onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'withdraw', [address, parseEther('10'), l3Signature as `0x${string}`], '0', 'withdraw')}
-                          disabled={isExploiting}
-                          className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest mt-2"
-                        >
-                          [ 2. SUBMIT WITHDRAWAL (REPLAYABLE) ]
-                        </button>
+                      <div className="flex flex-col gap-2 mt-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] opacity-70 tracking-widest">VALID SIGNATURE</span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(l3Signature);
+                              addLog('> SIGNATURE_COPIED_TO_CLIPBOARD');
+                            }}
+                            className="text-[10px] border border-[#00ff00] hover:bg-[#00ff00] hover:text-black px-2 py-1 transition-colors"
+                          >
+                            [ COPY ]
+                          </button>
+                        </div>
+                        <textarea readOnly value={l3Signature} className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs break-all outline-none resize-y h-24 focus:border-[#00ff00] transition-colors" />
                       </div>
                     )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">ATTACKER SKELETON</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(LEVEL3_SKELETON);
+                          addLog('> SKELETON_COPIED_TO_CLIPBOARD');
+                        }}
+                        className="text-[10px] border border-[#00ff00] hover:bg-[#00ff00] hover:text-black px-2 py-1 transition-colors"
+                      >
+                        [ COPY ]
+                      </button>
+                    </div>
+                    <textarea
+                      readOnly
+                      value={LEVEL3_SKELETON}
+                      className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-40 sm:h-48 resize-y outline-none focus:border-[#00ff00] transition-colors"
+                    />
                   </div>
 
                   {isComplete && (
