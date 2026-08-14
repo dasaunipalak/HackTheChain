@@ -20,9 +20,14 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+interface ITRCReceiver {
+    function onTRCReceived(uint256 amount) external;
+}
+
 contract Level1_Reentrancy {
     IERC20 public immutable trace;
     mapping(address => uint256) public balances;
+    uint256 public constant VAULT_AMOUNT = 100 ether;
 
     constructor(address _trace) {
         trace = IERC20(_trace);
@@ -30,25 +35,38 @@ contract Level1_Reentrancy {
 
     function deposit(uint256 amount) external {
         require(amount > 0, "Amount must be greater than zero");
-        bool success = trace.transferFrom(msg.sender, address(this), amount);
+
+        bool success = trace.transferFrom(
+            msg.sender,
+            address(this),
+            amount
+        );
+
         require(success, "Transfer failed");
         balances[msg.sender] += amount;
     }
 
     function withdraw() external {
         uint256 amount = balances[msg.sender];
+
         require(amount > 0, "No balance");
 
-        // Vulnerability: TRC is transferred before the balance is cleared.
-        bool success = trace.transfer(msg.sender, amount);
+        bool success = trace.transfer(
+            msg.sender,
+            amount
+        );
+
         require(success, "Transfer failed");
 
         if (msg.sender.code.length > 0) {
             ITRCReceiver(msg.sender).onTRCReceived(amount);
         }
 
-        // Too late!
         balances[msg.sender] = 0;
+    }
+
+    function isComplete() external view returns (bool) {
+        return trace.balanceOf(address(this)) == 0;
     }
 }`;
 
@@ -158,13 +176,12 @@ export default function Home() {
   // --------------------------------------------------------
   // LEVEL 1: REENTRANCY STATE
   // --------------------------------------------------------
-  const { data: l1TraceAddress } = useReadContract({
-    address: '0x435602f1E0efCfC57222B357B91611D57330F318', // Wait, I need TRACE address from CTFFactory. But I can just check target TRC balance since we know it's a TRC challenge.
-    // Wait, the player doesn't strictly need the trace address for UI display if we just fetch trace address from somewhere? 
-    // Actually, TRACE is not exposed on Level 1 ABI. Wait, in Level1_Reentrancy.sol, it is `IERC20 public immutable trace`.
-    // Let's add it to LEVEL1_ABI! Wait, config.ts doesn't have it.
-    // For now, if we can't easily get the trace balance because we don't have trace address, we can rely on `isComplete()` which returns true when drained.
+  const { data: factoryTraceAddressRaw } = useReadContract({
+    address: CTF_FACTORY_ADDRESS as `0x${string}`,
+    abi: CTF_FACTORY_ABI,
+    functionName: 'trace',
   });
+  const factoryTraceAddress = factoryTraceAddressRaw as `0x${string}` | undefined;
 
   // --------------------------------------------------------
   // LEVEL 2: ORACLE MANIPULATION STATE
@@ -209,7 +226,7 @@ export default function Home() {
   const { data: l2PlayerTrace, refetch: refetchL2PlayerTrace } = useReadContract({
     address: l2TraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [address as `0x${string}`], query: { enabled: !!l2TraceAddress && !!address }
   });
-  
+
   // Vault State (Level 2)
   const { data: l2VaultTrace, refetch: refetchL2VaultTrace } = useReadContract({
     address: l2TraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [targetAddress as `0x${string}`], query: { enabled: !!l2TraceAddress && !!targetAddress }
@@ -311,7 +328,7 @@ export default function Home() {
         addLog(`> LEVEL 0${selectedLevel} COMPLETE`);
         addLog(`> BADGE_0${selectedLevel}_MINTED`);
         await refetchSolved();
-        if (selectedLevel < 3) setSelectedLevel((selectedLevel + 1) as 1|2|3);
+        if (selectedLevel < 3) setSelectedLevel((selectedLevel + 1) as 1 | 2 | 3);
       } else addLog('> ERROR: VALIDATION TRANSACTION FAILED');
     } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); }
     finally { setIsVerifying(false); }
@@ -348,7 +365,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-black text-[#00ff00] font-mono selection:bg-[#00ff00] selection:text-black flex flex-col items-center">
-      
+
       {/* HEADER SECTION */}
       <header className="w-full border-b border-[#00ff00]/30 bg-black/90 sticky top-0 z-50 shadow-[0_0_20px_rgba(0,255,0,0.15)]">
         <div className="max-w-[1920px] mx-auto flex flex-wrap items-center justify-between p-4 gap-4">
@@ -365,10 +382,10 @@ export default function Home() {
 
       {/* MAIN CONTENT AREA */}
       <div className="flex-grow w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 p-4 lg:p-6 min-h-0">
-        
+
         {/* LEFT COLUMN: COMMAND CENTER & LOGS */}
         <div className="lg:col-span-4 xl:col-span-3 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
-          
+
           <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
             <h2 className="text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest">COMMAND CENTER</h2>
             <div className="flex flex-col gap-3">
@@ -406,38 +423,47 @@ export default function Home() {
 
         {/* MIDDLE COLUMN: MAIN WORKSPACE */}
         <div className="lg:col-span-8 xl:col-span-6 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
-          
+
           {targetAddress ? (
             <>
               {/* LEVEL INFORMATION */}
-              <div className="flex-none flex flex-col md:flex-row md:items-end justify-between gap-4 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
+              <div className="flex-none flex flex-col md:flex-row md:items-center justify-between gap-4 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
                 <div>
                   <h2 className="text-xs font-bold opacity-70 tracking-widest mb-1">LEVEL 0{selectedLevel}</h2>
                   <h3 className="text-xl lg:text-2xl font-bold tracking-widest">{LEVEL_DATA[selectedLevel - 1].title}</h3>
                 </div>
-                
-                <div className="flex flex-col gap-1 md:items-end">
-                  <span className="opacity-70 text-[10px] tracking-widest">TARGET INSTANCE</span>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-mono text-sm break-all">{targetAddress}</span>
+
+                <div className="flex flex-col gap-3 md:items-end">
+                  <div className="flex flex-col gap-1 md:items-end">
+                    <span className="opacity-70 text-[10px] tracking-widest">TARGET INSTANCE</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono text-sm break-all">{targetAddress}</span>
+                      <button onClick={() => copyToClipboard(targetAddress)} className="text-[9px] border border-[#00ff00] px-1.5 py-0.5 hover:bg-[#00ff00] hover:text-black min-w-fit">COPY</button>
+                    </div>
                   </div>
+                  {selectedLevel === 1 && factoryTraceAddress && (
+                    <div className="flex flex-col gap-1 md:items-end mt-2 md:mt-0 pt-2 md:pt-0 border-t border-[#00ff00]/30 md:border-none">
+                      <span className="opacity-70 text-[10px] tracking-widest">TRACE TOKEN</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-sm break-all">{factoryTraceAddress}</span>
+                        <button onClick={() => copyToClipboard(factoryTraceAddress)} className="text-[9px] border border-[#00ff00] px-1.5 py-0.5 hover:bg-[#00ff00] hover:text-black min-w-fit">COPY</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* LEVEL CONTENT */}
               {selectedLevel === 1 ? (
                 <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  
+
                   <div className="flex justify-between items-center border-b border-[#00ff00]/30 pb-2 mb-4">
                     <h2 className="text-xs font-bold tracking-widest">CHALLENGE: REENTRANCY</h2>
                     <span className="text-[10px] opacity-70">TARGET IS VULNERABLE</span>
                   </div>
 
                   <p className="text-xs mb-6 opacity-80 leading-relaxed max-w-2xl">
-                    The target vault handles user balances but performs an external transfer before updating the state.
-                    Since TRC implements `ITRCReceiver` hooks (like ERC777), the recipient contract can re-enter `withdraw()` before its balance is zeroed.
-                    <br/><br/>
-                    Build your attack contract in Remix, fund it, and execute the attack to drain the vault's 100 TRC.
+                    Analyze the target contract and find a way to drain the vault's 100 TRC. Use the provided attacker skeleton to build your exploit in Remix. Fund your attacker contract as needed, execute the attack, and return here once the vault balance reaches zero
                   </p>
 
                   <div className="flex flex-col gap-4 mb-6">
@@ -465,15 +491,15 @@ export default function Home() {
                   </div>
 
                   {isComplete && (
-                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
-                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
-                     </button>
+                    <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                      {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                    </button>
                   )}
                 </div>
               ) : selectedLevel === 2 ? (
                 <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
                   <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">MARKET MANIPULATION CONSOLE</h2>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                     <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
                       <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">MARKET STATE (AMM)</div>
@@ -481,7 +507,7 @@ export default function Home() {
                       <div className="flex justify-between text-xs"><span>TRC RESERVE:</span> <span>{l2AmmReserveTrace ? formatEther(l2AmmReserveTrace) : '---'} TRC</span></div>
                       <div className="flex justify-between text-xs font-bold text-yellow-400 mt-1 border-t border-[#00ff00]/20 pt-1"><span>ORACLE PRICE:</span> <span>{l2OraclePrice ? formatEther(l2OraclePrice) : '---'} TRC / MKT</span></div>
                     </div>
-                    
+
                     <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
                       <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">PLAYER BALANCES</div>
                       <div className="flex justify-between text-xs"><span>MKT (Collateral):</span> <span>{l2PlayerMkt ? formatEther(l2PlayerMkt) : '---'} MKT</span></div>
@@ -496,7 +522,7 @@ export default function Home() {
 
                   <div className="flex flex-col gap-3">
                     <div className="text-[10px] opacity-70 tracking-widest">ATTACK SEQUENCE</div>
-                    
+
                     {/* STEP 1 */}
                     <div className="flex flex-col sm:flex-row gap-2">
                       <button onClick={() => executeGenericTx(l2TraceAddress, TRACE_ABI, 'approve', [l2AmmAddress, parseEther('40')], '0', 'approve TRC')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
@@ -524,15 +550,15 @@ export default function Home() {
                   </div>
 
                   {isComplete && (
-                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
-                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
-                     </button>
+                    <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                      {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                    </button>
                   )}
                 </div>
               ) : selectedLevel === 3 ? (
                 <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
                   <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">SIGNATURE REPLAY</h2>
-                  
+
                   <p className="text-xs mb-6 opacity-80 leading-relaxed">
                     The backend signer provides valid signatures authorizing a 10 TRC withdrawal for your address.
                     Since the signature is never invalidated (no nonce), you can replay it multiple times to drain the vault.
@@ -547,13 +573,13 @@ export default function Home() {
                     <button onClick={handleRequestSignature} className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest">
                       [ 1. REQUEST 10 TRC SIGNATURE FROM BACKEND ]
                     </button>
-                    
+
                     {l3Signature && (
                       <div className="flex flex-col gap-2">
                         <span className="text-[10px] tracking-widest opacity-70">VALID SIGNATURE</span>
                         <textarea readOnly value={l3Signature} className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-2 font-mono text-[10px] break-all outline-none resize-none h-16" />
-                        
-                        <button 
+
+                        <button
                           onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'withdraw', [address, parseEther('10'), l3Signature as `0x${string}`], '0', 'withdraw')}
                           disabled={isExploiting}
                           className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest mt-2"
@@ -565,9 +591,9 @@ export default function Home() {
                   </div>
 
                   {isComplete && (
-                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
-                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
-                     </button>
+                    <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                      {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                    </button>
                   )}
                 </div>
               ) : null}
@@ -575,29 +601,28 @@ export default function Home() {
           ) : (
             <div className="flex-grow flex flex-col items-center justify-center border border-[#00ff00] bg-black p-8 shadow-[0_0_15px_rgba(0,255,0,0.1)] relative">
               <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#00ff00]/10 via-transparent to-transparent opacity-50 pointer-events-none"></div>
-              
+
               <div className="text-center z-10 flex flex-col items-center max-w-lg">
                 <div className="w-16 h-16 border-2 border-[#00ff00] rounded-full flex items-center justify-center mb-6 shadow-[0_0_15px_rgba(0,255,0,0.3)]">
                   <span className="text-2xl font-bold">0{selectedLevel}</span>
                 </div>
-                
+
                 <h2 className="text-xl md:text-2xl font-bold tracking-widest mb-4">LEVEL 0{selectedLevel}: {LEVEL_DATA[selectedLevel - 1].title}</h2>
                 <p className="text-sm opacity-70 leading-relaxed mb-8 font-mono">
                   Target system identified. Ready to provision vulnerable contract instance on the Sepolia network. Stand by for deployment.
                 </p>
-                
-                <button 
-                  onClick={handleInitialize} 
+
+                <button
+                  onClick={handleInitialize}
                   disabled={!isConnected || isInitializing}
-                  className={`px-8 py-4 border-2 font-bold tracking-widest transition-all w-full max-w-xs ${
-                    !isConnected ? 'border-red-500/50 text-red-500/50 cursor-not-allowed' :
+                  className={`px-8 py-4 border-2 font-bold tracking-widest transition-all w-full max-w-xs ${!isConnected ? 'border-red-500/50 text-red-500/50 cursor-not-allowed' :
                     isInitializing ? 'border-[#00ff00]/50 text-[#00ff00]/50 cursor-wait' :
-                    'border-[#00ff00] text-[#00ff00] hover:bg-[#00ff00] hover:text-black shadow-[0_0_15px_rgba(0,255,0,0.2)] hover:shadow-[0_0_25px_rgba(0,255,0,0.5)]'
-                  }`}
+                      'border-[#00ff00] text-[#00ff00] hover:bg-[#00ff00] hover:text-black shadow-[0_0_15px_rgba(0,255,0,0.2)] hover:shadow-[0_0_25px_rgba(0,255,0,0.5)]'
+                    }`}
                 >
                   {isInitializing ? '[ INITIALIZING... ]' : '[ INITIALIZE TARGET ]'}
                 </button>
-                
+
                 {!isConnected && (
                   <p className="text-red-500 mt-4 text-[10px] tracking-widest font-mono">WALLET CONNECTION REQUIRED</p>
                 )}
@@ -605,7 +630,7 @@ export default function Home() {
             </div>
           )}
         </div>
-        
+
         {/* RIGHT COLUMN: LEVEL NAVIGATION */}
         <div className="xl:col-span-3 lg:col-span-12 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
           <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] h-full flex flex-col">
@@ -615,17 +640,16 @@ export default function Home() {
                 const isUnlocked = level.id === 1 || isLevelSolvedGlobal(level.id - 1);
                 const isCurrent = level.id === selectedLevel;
                 const isCompleted = isLevelSolvedGlobal(level.id) || (isCurrent && isLevelCompleteLocally);
-                
+
                 return (
-                  <button 
+                  <button
                     key={level.id}
-                    onClick={() => isUnlocked && setSelectedLevel(level.id as 1|2|3)}
+                    onClick={() => isUnlocked && setSelectedLevel(level.id as 1 | 2 | 3)}
                     disabled={!isUnlocked}
-                    className={`flex flex-col text-left p-3 border transition-all min-w-0 ${
-                      !isUnlocked ? 'border-red-500/30 opacity-40 cursor-not-allowed text-red-500' :
+                    className={`flex flex-col text-left p-3 border transition-all min-w-0 ${!isUnlocked ? 'border-red-500/30 opacity-40 cursor-not-allowed text-red-500' :
                       isCurrent ? 'border-[#00ff00] bg-[#00ff00]/10 text-[#00ff00] shadow-[0_0_10px_rgba(0,255,0,0.2)]' :
-                      'border-[#00ff00]/30 hover:bg-[#00ff00]/10 text-[#00ff00]'
-                    }`}
+                        'border-[#00ff00]/30 hover:bg-[#00ff00]/10 text-[#00ff00]'
+                      }`}
                   >
                     <div className="font-bold tracking-widest text-xs flex gap-2 items-center min-w-0">
                       <span className="w-4 flex-shrink-0 text-center">{isCompleted ? '✓' : isCurrent ? '→' : !isUnlocked ? '🔒' : ' '}</span>

@@ -20,6 +20,9 @@ contract CTFFactory {
     mapping(uint256 => mapping(address => address)) public levelInstances;
     mapping(uint256 => mapping(address => bool)) public isSolved;
 
+    // Prevent players from receiving Level 1 starter TRC more than once.
+    mapping(address => bool) public level1StarterClaimed;
+
     event InstanceCreated(
         address indexed player,
         uint256 indexed levelId,
@@ -38,19 +41,6 @@ contract CTFFactory {
     }
 
     // ==========================================
-    // PLAYER SETUP
-    // ==========================================
-
-    function claimTokens() external {
-        require(
-            trace.balanceOf(msg.sender) == 0,
-            "Already claimed"
-        );
-
-        trace.mint(msg.sender, 10 ether);
-    }
-
-    // ==========================================
     // LEVEL 1: REENTRANCY
     // ==========================================
 
@@ -63,10 +53,24 @@ contract CTFFactory {
         Level1_Reentrancy instance =
             new Level1_Reentrancy(address(trace));
 
-        // Fund Level 1 with 100 TRC
-        trace.mint(address(instance), 100 ether);
+        // Fund Level 1 vault with 100 TRC.
+        trace.mint(
+            address(instance),
+            100 ether
+        );
 
-        levelInstances[1][msg.sender] = address(instance);
+        // Give the player 1 TRC to fund their attacker contract.
+        if (!level1StarterClaimed[msg.sender]) {
+            level1StarterClaimed[msg.sender] = true;
+
+            trace.mint(
+                msg.sender,
+                1 ether
+            );
+        }
+
+        levelInstances[1][msg.sender] =
+            address(instance);
 
         emit InstanceCreated(
             msg.sender,
@@ -78,7 +82,8 @@ contract CTFFactory {
     }
 
     function validateLevel1() external {
-        address instanceAddress = levelInstances[1][msg.sender];
+        address instanceAddress =
+            levelInstances[1][msg.sender];
 
         require(
             instanceAddress != address(0),
@@ -100,9 +105,15 @@ contract CTFFactory {
 
         isSolved[1][msg.sender] = true;
 
-        badgeContract.mintBadge(msg.sender, 1);
+        badgeContract.mintBadge(
+            msg.sender,
+            1
+        );
 
-        emit LevelSolved(msg.sender, 1);
+        emit LevelSolved(
+            msg.sender,
+            1
+        );
     }
 
     // ==========================================
@@ -157,8 +168,15 @@ contract CTFFactory {
         // 5. Give factory tokens for AMM setup
         // --------------------------------------
 
-        mkt.mint(address(this), 10 ether);
-        trace.mint(address(this), 10 ether);
+        mkt.mint(
+            address(this),
+            10 ether
+        );
+
+        trace.mint(
+            address(this),
+            10 ether
+        );
 
         // --------------------------------------
         // 6. Initialize AMM
@@ -273,39 +291,39 @@ contract CTFFactory {
     // ==========================================
 
     function deployLevel3() external returns (address) {
-    require(
-        isSolved[2][msg.sender],
-        "Must solve Level 2 first"
-    );
-
-    require(
-        levelInstances[3][msg.sender] == address(0),
-        "Instance already deployed"
-    );
-
-    Level3_SignatureReplay instance =
-        new Level3_SignatureReplay(
-            address(trace),
-            level3TrustedSigner
+        require(
+            isSolved[2][msg.sender],
+            "Must solve Level 2 first"
         );
 
-    // Fund Level 3 vault with 100 TRC.
-    trace.mint(
-        address(instance),
-        100 ether
-    );
+        require(
+            levelInstances[3][msg.sender] == address(0),
+            "Instance already deployed"
+        );
 
-    levelInstances[3][msg.sender] =
-        address(instance);
+        Level3_SignatureReplay instance =
+            new Level3_SignatureReplay(
+                address(trace),
+                level3TrustedSigner
+            );
 
-    emit InstanceCreated(
-        msg.sender,
-        3,
-        address(instance)
-    );
+        // Fund Level 3 vault with 100 TRC.
+        trace.mint(
+            address(instance),
+            100 ether
+        );
 
-    return address(instance);
-}
+        levelInstances[3][msg.sender] =
+            address(instance);
+
+        emit InstanceCreated(
+            msg.sender,
+            3,
+            address(instance)
+        );
+
+        return address(instance);
+    }
 
     function validateLevel3() external {
         address instanceAddress =

@@ -59,17 +59,15 @@ contract Level1ReentrancyTest is Test {
     function test_ReentrancyExploitAndValidation() public {
         vm.startPrank(player);
 
-        // Get 10 TRC
-        factory.claimTokens();
-
-        assertEq(
-            trace.balanceOf(player),
-            10 ether
-        );
-
         // Deploy Level 1
         address instanceAddress =
             factory.deployLevel1();
+
+        // Player gets 1 TRC
+        assertEq(
+            trace.balanceOf(player),
+            1 ether
+        );
 
         Level1_Reentrancy vault =
             Level1_Reentrancy(instanceAddress);

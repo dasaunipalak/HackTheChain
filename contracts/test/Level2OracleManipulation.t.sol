@@ -131,10 +131,13 @@ contract Level2OracleManipulationTest is Test {
         // STEP 1: Solve Level 1
         // ==================================================
 
-        factory.claimTokens();
-
         address level1Address =
             factory.deployLevel1();
+
+        assertEq(
+            trace.balanceOf(player),
+            1 ether
+        );
 
         Level1_Reentrancy level1 =
             Level1_Reentrancy(

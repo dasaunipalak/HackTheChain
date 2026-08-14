@@ -10,6 +10,7 @@ export const CTF_FACTORY_ABI = parseAbi([
 
   'function levelInstances(uint256, address) external view returns (address)',
   'function isSolved(uint256, address) external view returns (bool)',
+  'function trace() external view returns (address)',
 
   'function validateLevel1() external',
   'function validateLevel2() external',
