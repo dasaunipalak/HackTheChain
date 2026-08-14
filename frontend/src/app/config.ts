@@ -1,74 +1,82 @@
 import { parseAbi } from 'viem';
 
-// Replace with your actual CTFFactory contract address
-export const CTF_FACTORY_ADDRESS = '0x435602f1E0efCfC57222B357B91611D57330F318';
+export const CTF_FACTORY_ADDRESS =
+  '0x27da8AFdd5f7d66015fbA6f8A6c9Ec98A45d32A4';
 
 export const CTF_FACTORY_ABI = parseAbi([
-  'function deployLevel1() external payable returns (address)',
-  'function deployLevel2() external payable returns (address)',
-  'function deployLevel3() external payable returns (address)',
-  'function deployLevel4() external payable returns (address)',
-  'function deployLevel5() external payable returns (address)',
-  'function levelInstances(uint256, address) view returns (address)',
-  'function isSolved(uint256, address) view returns (bool)',
+  'function deployLevel1() external returns (address)',
+  'function deployLevel2() external returns (address)',
+  'function deployLevel3() external returns (address)',
+
+  'function levelInstances(uint256, address) external view returns (address)',
+  'function isSolved(uint256, address) external view returns (bool)',
+
   'function validateLevel1() external',
   'function validateLevel2() external',
   'function validateLevel3() external',
-  'function validateLevel4() external',
-  'function validateLevel5() external'
 ]);
+
+// ============================================================
+// LEVEL 1 — REENTRANCY / TRC
+// ============================================================
 
 export const LEVEL1_ABI = parseAbi([
-  'function withdrawAll(address recipient) external',
-  'function owner() external view returns (address)',
-  'function isComplete() external view returns (bool)'
+  'function deposit(uint256 amount) external',
+  'function withdraw() external',
+  'function balances(address) external view returns (uint256)',
+  'function isComplete() external view returns (bool)',
 ]);
+
+// ERC20/TRC interface used by Level 1, 2, 3
+export const TRACE_ABI = parseAbi([
+  'function transfer(address to, uint256 amount) external returns (bool)',
+  'function transferFrom(address from, address to, uint256 amount) external returns (bool)',
+  'function approve(address spender, uint256 amount) external returns (bool)',
+  'function balanceOf(address account) external view returns (uint256)',
+]);
+
+// ============================================================
+// LEVEL 2 — ORACLE MANIPULATION
+// ============================================================
 
 export const LEVEL2_ABI = parseAbi([
-  'function donate(address _to) external payable',
-  'function withdraw() external',
+  'function deposit(uint256 amount) external',
+  'function borrow(uint256 amount) external',
+
+  'function mkt() external view returns (address)',
+  'function trace() external view returns (address)',
+  'function oracle() external view returns (address)',
+
   'function isComplete() external view returns (bool)',
-  'function balances(address) external view returns (uint256)'
 ]);
 
-export const ATTACKER_ABI = parseAbi([
-  'function attack() external payable'
+// MKT token
+export const MKT_ABI = parseAbi([
+  'function transfer(address to, uint256 amount) external returns (bool)',
+  'function transferFrom(address from, address to, uint256 amount) external returns (bool)',
+  'function approve(address spender, uint256 amount) external returns (bool)',
+  'function balanceOf(address account) external view returns (uint256)',
 ]);
+
+// AMM used to manipulate the oracle
+export const LEVEL2_AMM_ABI = parseAbi([
+  'function swapTRACEForMKT(uint256 traceIn) external',
+  'function reserveMKT() external view returns (uint256)',
+  'function reserveTRACE() external view returns (uint256)'
+]);
+
+// Vulnerable oracle
+export const LEVEL2_ORACLE_ABI = parseAbi([
+  'function getPrice() external view returns (uint256)',
+]);
+
+// ============================================================
+// LEVEL 3 — SIGNATURE REPLAY
+// ============================================================
 
 export const LEVEL3_ABI = parseAbi([
-  'function claimAirdrop() external',
-  'function deposit(uint256 amount) external',
-  'function borrow(uint256 borrowAmount) external',
-  'function token() external view returns (address)',
-  'function amm() external view returns (address)',
-  'function oracle() external view returns (address)',
-  'function isComplete() external view returns (bool)'
-]);
-
-export const MOCK_TOKEN_ABI = parseAbi([
-  'function approve(address spender, uint256 amount) external returns (bool)',
-  'function balanceOf(address account) external view returns (uint256)'
-]);
-
-export const LEVEL3_AMM_ABI = parseAbi([
-  'function swapETHForTokens() external payable'
-]);
-
-export const LEVEL3_ORACLE_ABI = parseAbi([
-  'function getPrice() external view returns (uint256)'
-]);
-
-export const LEVEL4_ABI = parseAbi([
   'function withdraw(address recipient, uint256 amount, bytes signature) external',
   'function trustedSigner() external view returns (address)',
-  'function isComplete() external view returns (bool)'
-]);
-
-export const LEVEL5_ABI = parseAbi([
-  'function execute(bytes data) external',
-  'function withdraw(address recipient) external',
-  'function updateAddress(address) external',
-  'function implementation() external view returns (address)',
-  'function owner() external view returns (address)',
-  'function isComplete() external view returns (bool)'
+  'function trace() external view returns (address)',
+  'function isComplete() external view returns (bool)',
 ]);

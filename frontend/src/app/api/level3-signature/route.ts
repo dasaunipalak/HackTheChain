@@ -19,12 +19,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid playerAddress' }, { status: 400 });
     }
 
-    // Validate amount is exactly 0.01 ETH in wei
-    if (amount !== '10000000000000000') {
+    // Validate amount is exactly 10 TRC in wei (10000000000000000000)
+    if (amount !== '10000000000000000000') {
       return NextResponse.json({ error: 'Invalid challenge withdrawal amount' }, { status: 400 });
     }
 
-    const privateKey = process.env.LEVEL4_SIGNER_PRIVATE_KEY;
+    const privateKey = process.env.LEVEL3_SIGNER_PRIVATE_KEY;
     if (!privateKey) {
       return NextResponse.json({ error: 'Server misconfiguration: missing private key' }, { status: 500 });
     }

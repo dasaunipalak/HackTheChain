@@ -1,364 +1,120 @@
 'use client';
-
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useAccount, useReadContract, useReadContracts, useWriteContract, useBalance, usePublicClient } from 'wagmi';
-import { parseEther, formatEther, isAddress, encodeFunctionData } from 'viem';
-import { 
-  CTF_FACTORY_ADDRESS, CTF_FACTORY_ABI, 
-  LEVEL1_ABI, LEVEL2_ABI, ATTACKER_ABI,
-  LEVEL3_ABI, LEVEL3_AMM_ABI, LEVEL3_ORACLE_ABI, MOCK_TOKEN_ABI,
-  LEVEL4_ABI, LEVEL5_ABI 
+import { useAccount, useReadContract, useReadContracts, useWriteContract, usePublicClient } from 'wagmi';
+import { parseEther, formatEther, isAddress, parseAbi } from 'viem';
+import {
+  CTF_FACTORY_ADDRESS,
+  CTF_FACTORY_ABI,
+  LEVEL1_ABI,
+  LEVEL2_ABI,
+  LEVEL3_ABI,
+  TRACE_ABI,
+  MKT_ABI,
+  LEVEL2_AMM_ABI,
+  LEVEL2_ORACLE_ABI,
 } from './config';
 
 const LEVEL1_SOURCE_CODE = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-contract Level1_AccessControl {
-    address public owner;
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-    constructor() payable {
-        owner = msg.sender;
-    }
-
-    function withdrawAll(address payable recipient) external {
-        recipient.transfer(address(this).balance);
-    }
-
-    function isComplete() external view returns (bool) {
-        return address(this).balance == 0;
-    }
-}`;
-
-const LEVEL2_SOURCE_CODE = `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-contract Level2_Reentrancy {
+contract Level1_Reentrancy {
+    IERC20 public immutable trace;
     mapping(address => uint256) public balances;
-    
-    constructor() payable {
-        balances[address(this)] = msg.value;
+
+    constructor(address _trace) {
+        trace = IERC20(_trace);
     }
 
-    function donate(address _to) external payable {
-        balances[_to] += msg.value;
+    function deposit(uint256 amount) external {
+        require(amount > 0, "Amount must be greater than zero");
+        bool success = trace.transferFrom(msg.sender, address(this), amount);
+        require(success, "Transfer failed");
+        balances[msg.sender] += amount;
     }
 
     function withdraw() external {
         uint256 amount = balances[msg.sender];
         require(amount > 0, "No balance");
 
-        (bool success, ) = msg.sender.call{value: amount}("");
+        // Vulnerability: TRC is transferred before the balance is cleared.
+        bool success = trace.transfer(msg.sender, amount);
         require(success, "Transfer failed");
 
-        balances[msg.sender] = 0; 
-    }
-    
-    function isComplete() external view returns (bool) {
-        return address(this).balance == 0;
+        if (msg.sender.code.length > 0) {
+            ITRCReceiver(msg.sender).onTRCReceived(amount);
+        }
+
+        // Too late!
+        balances[msg.sender] = 0;
     }
 }`;
 
-const LEVEL2_SKELETON = `// SPDX-License-Identifier: MIT
+const LEVEL1_SKELETON = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-interface IVulnerable {
-    function donate(address _to) external payable;
+interface ILevel1 {
+    function deposit(uint256 amount) external;
     function withdraw() external;
 }
 
-contract ReentrancyAttack {
-    IVulnerable public target;
-    address public owner;
+interface ITRACE {
+    function approve(address spender, uint256 amount) external returns (bool);
+}
 
-    constructor(address _target) {
-        // TODO
+contract Attacker {
+    ILevel1 public vault;
+    ITRACE public trace;
+
+    constructor(address _vault, address _trace) {
+        // TODO: Initialize vault and trace interfaces
     }
 
-    function attack() external payable {
-        // TODO
+    function attack(uint256 amount) external {
+        // TODO: Exploit reentrancy
     }
 
-    receive() external payable {
-        // TODO
+    function onTRCReceived(uint256 amount) external {
+        // TODO: Recursive call
     }
 }`;
 
 const LEVEL_DATA = [
-  { id: 1, title: 'ACCESS CONTROL' },
-  { id: 2, title: 'REENTRANCY' },
-  { id: 3, title: 'ORACLE MANIPULATION' },
-  { id: 4, title: 'SIGNATURE REPLAY' },
-  { id: 5, title: 'DELEGATECALL' }
+  { id: 1, title: 'REENTRANCY' },
+  { id: 2, title: 'ORACLE MANIPULATION' },
+  { id: 3, title: 'SIGNATURE REPLAY' },
 ];
 
 export default function Home() {
-  const { address, isConnected, chainId } = useAccount();
+  const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient();
 
-  const [selectedLevel, setSelectedLevel] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [selectedLevel, setSelectedLevel] = useState<1 | 2 | 3>(1);
 
   // Level State Logs
   const [logsL1, setLogsL1] = useState<string[]>(['> SYSTEM_READY']);
   const [logsL2, setLogsL2] = useState<string[]>(['> SYSTEM_READY']);
   const [logsL3, setLogsL3] = useState<string[]>(['> SYSTEM_READY']);
-  const [logsL4, setLogsL4] = useState<string[]>(['> SYSTEM_READY']);
-  const [logsL5, setLogsL5] = useState<string[]>(['> SYSTEM_READY']);
 
   const getLogs = (l: number) => {
-    switch(l) {
-      case 1: return logsL1; case 2: return logsL2; case 3: return logsL3;
-      case 4: return logsL4; case 5: return logsL5; default: return [];
+    switch (l) {
+      case 1: return logsL1;
+      case 2: return logsL2;
+      case 3: return logsL3;
+      default: return [];
     }
   };
   const currentLogs = getLogs(selectedLevel);
+
   const addLog = (msg: string) => {
-    switch(selectedLevel) {
+    switch (selectedLevel) {
       case 1: setLogsL1(p => [...p, msg]); break;
       case 2: setLogsL2(p => [...p, msg]); break;
       case 3: setLogsL3(p => [...p, msg]); break;
-      case 4: setLogsL4(p => [...p, msg]); break;
-      case 5: setLogsL5(p => [...p, msg]); break;
     }
-  };
-
-  const isExploitConfirmed = currentLogs.some(l => l.includes('EXPLOIT_CONFIRMED') || l.includes('TRANSACTION_CONFIRMED') || l.includes('_CONFIRMED ✓'));
-  const isLevelCompleteLocally = currentLogs.some(l => l.includes('VERIFICATION_CONFIRMED ✓') || l.includes('VALIDATION_CONFIRMED ✓'));
-
-  // Level 1 Local State
-  const [l1Recipient, setL1Recipient] = useState<string>('');
-  const [l1HintLevel, setL1HintLevel] = useState(0);
-  const [l1OwnerResult, setL1OwnerResult] = useState<string | null>(null);
-  const [l1IsCompleteResult, setL1IsCompleteResult] = useState<string | null>(null);
-
-
-  const handleReadOwner = async () => {
-    if (!publicClient || !targetAddress) return;
-    try {
-      const res = await publicClient.readContract({
-        address: targetAddress,
-        abi: LEVEL1_ABI,
-        functionName: 'owner'
-      });
-      setL1OwnerResult(res as string);
-      addLog(`> CALL owner()\n> RETURN: ${res}`);
-    } catch (e: any) {
-      addLog(`> ERROR: Failed to read owner()\n> ${e.shortMessage || e.message}`);
-    }
-  };
-
-  const handleReadIsComplete = async () => {
-    if (!publicClient || !targetAddress) return;
-    try {
-      const res = await publicClient.readContract({
-        address: targetAddress,
-        abi: LEVEL1_ABI,
-        functionName: 'isComplete'
-      });
-      setL1IsCompleteResult(res ? 'true' : 'false');
-      addLog(`> CALL isComplete()\n> RETURN: ${res}`);
-    } catch (e: any) {
-      addLog(`> ERROR: Failed to read isComplete()\n> ${e.shortMessage || e.message}`);
-    }
-  };
-  
-  // Level 2 Local State
-  const [attackerInput, setAttackerInput] = useState('');
-  const [registeredAttacker, setRegisteredAttacker] = useState('');
-  const [l2AttackAmount, setL2AttackAmount] = useState('0.001');
-
-  // Level 3 Local State
-  const [l3SwapAmount, setL3SwapAmount] = useState('0.1');
-  const [l3ApproveAmount, setL3ApproveAmount] = useState('');
-  const [l3DepositAmount, setL3DepositAmount] = useState('');
-  const [l3BorrowAmount, setL3BorrowAmount] = useState('0.1');
-  
-  // Level 4 Local State
-  const [l4AmountInput, setL4AmountInput] = useState('0.01');
-  const [l4Signature, setL4Signature] = useState('');
-  const [isRequestingSignature, setIsRequestingSignature] = useState(false);
-
-  // Level 5 Local State
-  const [l5AddressInput, setL5AddressInput] = useState('');
-  const [l5Calldata, setL5Calldata] = useState('');
-  const [l5WithdrawRecipient, setL5WithdrawRecipient] = useState('');
-
-  // UI Flow States
-  const [isInitializing, setIsInitializing] = useState(false);
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [isExploiting, setIsExploiting] = useState(false);
-
-  const logsEndRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [currentLogs, selectedLevel]);
-
-  useEffect(() => {
-    if (address) {
-
-      if (!l5AddressInput) setL5AddressInput(address);
-      if (!l5WithdrawRecipient) setL5WithdrawRecipient(address);
-    }
-  }, [address]);
-
-  // Global Solved State
-  const { data: solvedData, refetch: refetchSolved } = useReadContracts({
-    contracts: [1, 2, 3, 4, 5].map(id => ({
-      address: CTF_FACTORY_ADDRESS as `0x${string}`,
-      abi: CTF_FACTORY_ABI,
-      functionName: 'isSolved',
-      args: address ? [BigInt(id), address] : undefined,
-    })),
-    query: { enabled: !!address }
-  });
-
-  const isLevelSolvedGlobal = (id: number) => !!solvedData?.[id - 1]?.result;
-  const isSelectedLevelFullyComplete = isLevelSolvedGlobal(selectedLevel) || isLevelCompleteLocally;
-
-  // Selected Instance
-  const { data: targetAddressRaw, refetch: refetchTarget } = useReadContract({
-    address: CTF_FACTORY_ADDRESS as `0x${string}`, abi: CTF_FACTORY_ABI, functionName: 'levelInstances',
-    args: address ? [BigInt(selectedLevel), address] : undefined,
-    query: { enabled: !!address }
-  });
-  const targetAddress = (targetAddressRaw && targetAddressRaw !== '0x0000000000000000000000000000000000000000') ? (targetAddressRaw as `0x${string}`) : undefined;
-
-  const currentAbi = selectedLevel === 1 ? LEVEL1_ABI : selectedLevel === 2 ? LEVEL2_ABI : selectedLevel === 3 ? LEVEL3_ABI : selectedLevel === 4 ? LEVEL4_ABI : LEVEL5_ABI;
-
-  const { data: targetBalance, refetch: refetchBalance } = useBalance({ address: targetAddress, query: { enabled: !!targetAddress } });
-  
-  const { data: isComplete, refetch: refetchIsComplete } = useReadContract({
-    address: targetAddress, abi: currentAbi, functionName: 'isComplete',
-    query: { enabled: !!targetAddress }
-  });
-
-  // Specific state reads
-  const { data: ownerAddressRaw, refetch: refetchOwner } = useReadContract({
-    address: targetAddress, abi: LEVEL1_ABI, functionName: 'owner',
-    query: { enabled: !!targetAddress && selectedLevel === 1 }
-  });
-  const ownerAddress = ownerAddressRaw as string | undefined;
-
-  // L3 Reads
-  const { data: l3TokenRaw, refetch: refetchL3Token } = useReadContract({
-    address: targetAddress, abi: LEVEL3_ABI, functionName: 'token',
-    query: { enabled: !!targetAddress && selectedLevel === 3 }
-  });
-  const { data: l3AmmRaw, refetch: refetchL3Amm } = useReadContract({
-    address: targetAddress, abi: LEVEL3_ABI, functionName: 'amm',
-    query: { enabled: !!targetAddress && selectedLevel === 3 }
-  });
-  const { data: l3OracleRaw, refetch: refetchL3Oracle } = useReadContract({
-    address: targetAddress, abi: LEVEL3_ABI, functionName: 'oracle',
-    query: { enabled: !!targetAddress && selectedLevel === 3 }
-  });
-  const { data: l3OraclePriceRaw, refetch: refetchL3OraclePrice } = useReadContract({
-    address: l3OracleRaw as `0x${string}`, abi: LEVEL3_ORACLE_ABI, functionName: 'getPrice',
-    query: { enabled: !!l3OracleRaw && selectedLevel === 3 }
-  });
-  const { data: l3PlayerMktBalanceRaw, refetch: refetchL3PlayerMktBalance } = useReadContract({
-    address: l3TokenRaw as `0x${string}`, abi: MOCK_TOKEN_ABI, functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: !!l3TokenRaw && !!address && selectedLevel === 3 }
-  });
-
-  // L4 Reads
-  const { data: l4SignerRaw, refetch: refetchL4Signer } = useReadContract({
-    address: targetAddress, abi: LEVEL4_ABI, functionName: 'trustedSigner',
-    query: { enabled: !!targetAddress && selectedLevel === 4 }
-  });
-
-  // L5 Reads
-  const { data: l5ImplRaw, refetch: refetchL5Impl } = useReadContract({
-    address: targetAddress, abi: LEVEL5_ABI, functionName: 'implementation',
-    query: { enabled: !!targetAddress && selectedLevel === 5 }
-  });
-  const { data: l5OwnerRaw, refetch: refetchL5Owner } = useReadContract({
-    address: targetAddress, abi: LEVEL5_ABI, functionName: 'owner',
-    query: { enabled: !!targetAddress && selectedLevel === 5 }
-  });
-
-  const { writeContractAsync } = useWriteContract();
-
-  const handleInitLevel = async () => {
-    setIsInitializing(true);
-    try {
-      addLog('> PREPARING_TRANSACTION');
-      const val = selectedLevel === 3 ? '0.11' : selectedLevel === 4 || selectedLevel === 5 ? '0.05' : '0.01';
-      const hash = await writeContractAsync({
-        address: CTF_FACTORY_ADDRESS as `0x${string}`,
-        abi: CTF_FACTORY_ABI,
-        functionName: `deployLevel${selectedLevel}`,
-        value: parseEther(val),
-      });
-      addLog(`> TX_HASH: ${hash}`);
-      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
-      if (receipt?.status === 'success') {
-        addLog(`> LEVEL_0${selectedLevel}_INITIALIZED`);
-        addLog('> TARGET_ACQUIRED ✓');
-        refetchTarget();
-      } else addLog('> ERROR: TARGET DEPLOYMENT FAILED');
-    } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); }
-    finally { setIsInitializing(false); }
-  };
-
-  const handleVerifyHack = async () => {
-    if (!targetAddress) return;
-    setIsVerifying(true);
-    try {
-      const result = await refetchIsComplete();
-      if (!result.data) { addLog('> ERROR: TARGET NOT DRAINED'); return; }
-      addLog('> VALIDATION_SUBMITTED');
-      const hash = await writeContractAsync({
-        address: CTF_FACTORY_ADDRESS as `0x${string}`,
-        abi: CTF_FACTORY_ABI,
-        functionName: `validateLevel${selectedLevel}`,
-      });
-      addLog(`> TX_HASH: ${hash}`);
-      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
-      if (receipt?.status === 'success') {
-        addLog('> VALIDATION_CONFIRMED ✓');
-        addLog('> ACCESS GRANTED');
-        addLog(`> LEVEL 0${selectedLevel} COMPLETE`);
-        addLog(`> BADGE_0${selectedLevel}_MINTED`);
-        await refetchSolved();
-        if (selectedLevel < 5) setSelectedLevel((selectedLevel + 1) as 1|2|3|4|5);
-      } else addLog('> ERROR: VALIDATION TRANSACTION FAILED');
-    } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); }
-    finally { setIsVerifying(false); }
-  };
-
-  const executeGenericTx = async (target: `0x${string}`, abi: any, functionName: string, args: any[] = [], value: string = '0', logStr: string) => {
-    setIsExploiting(true);
-    try {
-      addLog(`> ${logStr}_SUBMITTED`);
-      const hash = await writeContractAsync({ address: target, abi, functionName, args, value: parseEther(value) });
-      addLog(`> TX_HASH: ${hash}`);
-      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
-      if (receipt?.status === 'success') {
-        addLog(`> ${logStr}_CONFIRMED ✓`);
-        await refetchAll();
-        return true;
-      } else {
-        addLog('> ERROR: TRANSACTION REVERTED');
-        return false;
-      }
-    } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); return false; }
-    finally { setIsExploiting(false); }
-  };
-
-  const refetchAll = async () => {
-    refetchBalance(); refetchIsComplete();
-    if (selectedLevel === 1) refetchOwner();
-    if (selectedLevel === 3) { refetchL3Token(); refetchL3Amm(); refetchL3Oracle(); refetchL3OraclePrice(); refetchL3PlayerMktBalance(); }
-    if (selectedLevel === 4) { refetchL4Signer(); }
-    if (selectedLevel === 5) { refetchL5Impl(); refetchL5Owner(); }
-  };
-
-  const handleRegisterAttacker = async () => {
-    if (!isAddress(attackerInput)) { addLog('> ERROR: INVALID ATTACKER ADDRESS'); return; }
-    const code = await publicClient?.getBytecode({ address: attackerInput as `0x${string}` });
-    if (!code || code === '0x') { addLog('> ERROR: NO CONTRACT FOUND AT ADDRESS'); return; }
-    setRegisteredAttacker(attackerInput);
-    addLog(`> ATTACKER_REGISTERED ✓`);
   };
 
   const copyToClipboard = (text: string) => {
@@ -366,184 +122,296 @@ export default function Home() {
     addLog('> COPIED_TO_CLIPBOARD');
   };
 
-  const formatLog = (log: string, index: number) => {
-    if (log.startsWith('> ERROR')) return <div key={index} className="text-red-500">{log}</div>;
-    if (log.startsWith('> TX_HASH:')) {
-      const hash = log.split('TX_HASH: ')[1];
-      return <div key={index}>&gt; TX: <a href={`https://sepolia.etherscan.io/tx/${hash}`} target="_blank" rel="noreferrer" className="underline hover:text-white break-all">{hash}</a></div>;
-    }
-    if (log.includes('✓') || log.includes('ACCESS GRANTED')) return <div key={index} className="text-[#00ff00] font-bold shadow-[0_0_5px_rgba(0,255,0,0.3)]">{log}</div>;
-    return <div key={index}>{log}</div>;
+  // --------------------------------------------------------
+  // GLOBAL STATE
+  // --------------------------------------------------------
+  const { data: targetAddressRaw, refetch: refetchTarget } = useReadContract({
+    address: CTF_FACTORY_ADDRESS as `0x${string}`,
+    abi: CTF_FACTORY_ABI,
+    functionName: 'levelInstances',
+    args: [BigInt(selectedLevel), address as `0x${string}`],
+    query: { enabled: !!address }
+  });
+  const targetAddress = targetAddressRaw && targetAddressRaw !== '0x0000000000000000000000000000000000000000' ? (targetAddressRaw as `0x${string}`) : undefined;
+
+  const { data: solvedStatus, refetch: refetchSolved } = useReadContracts({
+    contracts: [
+      { address: CTF_FACTORY_ADDRESS as `0x${string}`, abi: CTF_FACTORY_ABI, functionName: 'isSolved', args: [BigInt(1), address as `0x${string}`] },
+      { address: CTF_FACTORY_ADDRESS as `0x${string}`, abi: CTF_FACTORY_ABI, functionName: 'isSolved', args: [BigInt(2), address as `0x${string}`] },
+      { address: CTF_FACTORY_ADDRESS as `0x${string}`, abi: CTF_FACTORY_ABI, functionName: 'isSolved', args: [BigInt(3), address as `0x${string}`] }
+    ]
+  });
+
+  const isLevelSolvedGlobal = (level: number) => {
+    if (!solvedStatus || !solvedStatus[level - 1]) return false;
+    return solvedStatus[level - 1].result === true;
   };
 
-  // Level 3 Derived State
-  const l3HasClaimed = currentLogs.some(l => l.includes('AIRDROP_CONFIRMED ✓'));
-  const l3HasManipulated = currentLogs.some(l => l.includes('AMM_SWAP_CONFIRMED ✓'));
-  const l3HasApproved = currentLogs.some(l => l.includes('APPROVE_CONFIRMED ✓'));
-  const l3HasDeposited = currentLogs.some(l => l.includes('DEPOSIT_CONFIRMED ✓'));
-  const l3MktBalance = l3PlayerMktBalanceRaw as bigint | undefined;
+  const currentAbi = selectedLevel === 1 ? LEVEL1_ABI : selectedLevel === 2 ? LEVEL2_ABI : LEVEL3_ABI;
 
-  useEffect(() => {
-    if (l3MktBalance !== undefined) {
-      if (!l3ApproveAmount || l3HasManipulated) setL3ApproveAmount(l3MktBalance.toString());
-      if (!l3DepositAmount || l3HasApproved) setL3DepositAmount(l3MktBalance.toString());
+  const { data: isComplete, refetch: refetchIsComplete } = useReadContract({
+    address: targetAddress, abi: currentAbi, functionName: 'isComplete',
+    query: { enabled: !!targetAddress }
+  });
+  const isLevelCompleteLocally = !!isComplete;
+
+  // --------------------------------------------------------
+  // LEVEL 1: REENTRANCY STATE
+  // --------------------------------------------------------
+  const { data: l1TraceAddress } = useReadContract({
+    address: '0x435602f1E0efCfC57222B357B91611D57330F318', // Wait, I need TRACE address from CTFFactory. But I can just check target TRC balance since we know it's a TRC challenge.
+    // Wait, the player doesn't strictly need the trace address for UI display if we just fetch trace address from somewhere? 
+    // Actually, TRACE is not exposed on Level 1 ABI. Wait, in Level1_Reentrancy.sol, it is `IERC20 public immutable trace`.
+    // Let's add it to LEVEL1_ABI! Wait, config.ts doesn't have it.
+    // For now, if we can't easily get the trace balance because we don't have trace address, we can rely on `isComplete()` which returns true when drained.
+  });
+
+  // --------------------------------------------------------
+  // LEVEL 2: ORACLE MANIPULATION STATE
+  // --------------------------------------------------------
+  const { data: l2MktRaw } = useReadContract({
+    address: selectedLevel === 2 ? targetAddress : undefined, abi: LEVEL2_ABI, functionName: 'mkt', query: { enabled: selectedLevel === 2 && !!targetAddress }
+  });
+  const { data: l2TraceRaw } = useReadContract({
+    address: selectedLevel === 2 ? targetAddress : undefined, abi: LEVEL2_ABI, functionName: 'trace', query: { enabled: selectedLevel === 2 && !!targetAddress }
+  });
+  const { data: l2AmmRaw } = useReadContract({
+    address: selectedLevel === 2 ? targetAddress : undefined, abi: LEVEL2_ABI, functionName: 'oracle', query: { enabled: false } // Wait, I need AMM, but vault has oracle.
+  });
+  // Actually oracle exposes amm(), but vault does not expose amm() directly. Let's just fetch oracle first.
+  const { data: l2OracleRaw } = useReadContract({
+    address: selectedLevel === 2 ? targetAddress : undefined, abi: LEVEL2_ABI, functionName: 'oracle', query: { enabled: selectedLevel === 2 && !!targetAddress }
+  });
+  // Now fetch AMM from Oracle
+  const { data: l2AmmFromOracle } = useReadContract({
+    address: (l2OracleRaw as `0x${string}`), abi: parseAbi(['function amm() external view returns (address)']), functionName: 'amm', query: { enabled: !!l2OracleRaw }
+  });
+  const l2AmmAddress = l2AmmFromOracle as `0x${string}`;
+  const l2OracleAddress = l2OracleRaw as `0x${string}`;
+  const l2MktAddress = l2MktRaw as `0x${string}`;
+  const l2TraceAddress = l2TraceRaw as `0x${string}`;
+
+  // Market State (Level 2)
+  const { data: l2OraclePrice, refetch: refetchL2OraclePrice } = useReadContract({
+    address: l2OracleAddress, abi: LEVEL2_ORACLE_ABI, functionName: 'getPrice', query: { enabled: !!l2OracleAddress }
+  });
+  const { data: l2AmmReserveMkt, refetch: refetchL2ReserveMkt } = useReadContract({
+    address: l2AmmAddress, abi: LEVEL2_AMM_ABI, functionName: 'reserveMKT', query: { enabled: !!l2AmmAddress }
+  });
+  const { data: l2AmmReserveTrace, refetch: refetchL2ReserveTrace } = useReadContract({
+    address: l2AmmAddress, abi: LEVEL2_AMM_ABI, functionName: 'reserveTRACE', query: { enabled: !!l2AmmAddress }
+  });
+
+  // Player State (Level 2)
+  const { data: l2PlayerMkt, refetch: refetchL2PlayerMkt } = useReadContract({
+    address: l2MktAddress, abi: MKT_ABI, functionName: 'balanceOf', args: [address as `0x${string}`], query: { enabled: !!l2MktAddress && !!address }
+  });
+  const { data: l2PlayerTrace, refetch: refetchL2PlayerTrace } = useReadContract({
+    address: l2TraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [address as `0x${string}`], query: { enabled: !!l2TraceAddress && !!address }
+  });
+  
+  // Vault State (Level 2)
+  const { data: l2VaultTrace, refetch: refetchL2VaultTrace } = useReadContract({
+    address: l2TraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [targetAddress as `0x${string}`], query: { enabled: !!l2TraceAddress && !!targetAddress }
+  });
+
+  // --------------------------------------------------------
+  // LEVEL 3: SIGNATURE REPLAY STATE
+  // --------------------------------------------------------
+  const { data: l3TraceAddress } = useReadContract({
+    address: selectedLevel === 3 ? targetAddress : undefined, abi: LEVEL3_ABI, functionName: 'trace', query: { enabled: selectedLevel === 3 && !!targetAddress }
+  });
+  const { data: l3VaultTrace, refetch: refetchL3VaultTrace } = useReadContract({
+    address: l3TraceAddress as `0x${string}`, abi: TRACE_ABI, functionName: 'balanceOf', args: [targetAddress as `0x${string}`], query: { enabled: !!l3TraceAddress && !!targetAddress }
+  });
+  const [l3Signature, setL3Signature] = useState('');
+
+
+  // --------------------------------------------------------
+  // GLOBAL ACTIONS
+  // --------------------------------------------------------
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [isExploiting, setIsExploiting] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+
+  const executeGenericTx = async (target: `0x${string}`, abi: any, functionName: string, args: any[] = [], value: string = '0', logName: string = functionName) => {
+    setIsExploiting(true);
+    try {
+      addLog(`> PREPARING_TRANSACTION: ${logName}`);
+      const hash = await writeContractAsync({
+        address: target,
+        abi,
+        functionName,
+        args,
+        value: parseEther(value)
+      });
+      addLog(`> TX_SUBMITTED: ${hash.slice(0, 10)}...`);
+      await publicClient?.waitForTransactionReceipt({ hash });
+      addLog(`> TX_CONFIRMED: ${logName} ✓`);
+      refetchAllState();
+      return true;
+    } catch (e: any) {
+      addLog(`> ERROR: ${e.shortMessage || e.message}`);
+      return false;
+    } finally {
+      setIsExploiting(false);
     }
-  }, [l3MktBalance, l3HasManipulated, l3HasApproved]);
+  };
 
-  // Level 4 Signature Endpoint
-  const requestLevel4Signature = async (instanceAddress: string, playerAddress: string, amount: string) => {
-    setIsRequestingSignature(true);
+  const refetchAllState = () => {
+    refetchIsComplete();
+    refetchTarget();
+    if (selectedLevel === 2) {
+      refetchL2OraclePrice();
+      refetchL2ReserveMkt();
+      refetchL2ReserveTrace();
+      refetchL2PlayerMkt();
+      refetchL2PlayerTrace();
+      refetchL2VaultTrace();
+    }
+    if (selectedLevel === 3) {
+      refetchL3VaultTrace();
+    }
+  };
+
+  const handleInitialize = async () => {
+    if (!address) return addLog('> ERROR: WALLET_NOT_CONNECTED');
+    setIsInitializing(true);
+    try {
+      addLog('> PREPARING_TRANSACTION');
+      const hash = await writeContractAsync({
+        address: CTF_FACTORY_ADDRESS as `0x${string}`,
+        abi: CTF_FACTORY_ABI,
+        functionName: selectedLevel === 1 ? 'deployLevel1' : selectedLevel === 2 ? 'deployLevel2' : 'deployLevel3',
+        args: []
+      });
+      addLog(`> TX_SUBMITTED: ${hash.slice(0, 10)}...`);
+      await publicClient?.waitForTransactionReceipt({ hash });
+      addLog('> TX_CONFIRMED: INITIALIZATION COMPLETE');
+      await refetchTarget();
+      refetchAllState();
+    } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); }
+    finally { setIsInitializing(false); }
+  };
+
+  const handleVerifyHack = async () => {
+    if (!address || !targetAddress) return;
+    setIsVerifying(true);
+    try {
+      addLog('> INITIATING_VALIDATION');
+      const hash = await writeContractAsync({
+        address: CTF_FACTORY_ADDRESS as `0x${string}`,
+        abi: CTF_FACTORY_ABI,
+        functionName: selectedLevel === 1 ? 'validateLevel1' : selectedLevel === 2 ? 'validateLevel2' : 'validateLevel3',
+        args: []
+      });
+      addLog(`> TX_SUBMITTED: ${hash.slice(0, 10)}...`);
+      const receipt = await publicClient?.waitForTransactionReceipt({ hash });
+      if (receipt?.status === 'success') {
+        addLog(`> LEVEL 0${selectedLevel} COMPLETE`);
+        addLog(`> BADGE_0${selectedLevel}_MINTED`);
+        await refetchSolved();
+        if (selectedLevel < 3) setSelectedLevel((selectedLevel + 1) as 1|2|3);
+      } else addLog('> ERROR: VALIDATION TRANSACTION FAILED');
+    } catch (e: any) { addLog(`> ERROR: ${e.shortMessage || e.message}`); }
+    finally { setIsVerifying(false); }
+  };
+
+  // --------------------------------------------------------
+  // LEVEL 3 SIGNATURE LOGIC
+  // --------------------------------------------------------
+  const handleRequestSignature = async () => {
+    if (!targetAddress || !address) return;
     try {
       addLog('> REQUESTING_SIGNATURE_FROM_BACKEND');
-      const res = await fetch('/api/level4-signature', {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-              instanceAddress,
-              playerAddress,
-              amount: parseEther(amount).toString()
-          })
+      const res = await fetch('/api/level3-signature', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          instanceAddress: targetAddress,
+          playerAddress: address,
+          amount: parseEther('10').toString() // 10 TRC
+        })
       });
       const data = await res.json();
       if (!res.ok) {
-        addLog(`> ERROR: ${data.error || 'Failed to fetch signature'}`);
-        return;
+        throw new Error(data.error || 'Failed to fetch signature');
       }
-      addLog(`> SIGNATURE_ACQUIRED ✓`);
-      setL4Signature(data.signature);
+      setL3Signature(data.signature);
+      addLog(`> SIGNATURE_RECEIVED: ${data.signature.substring(0, 20)}...`);
     } catch (e: any) {
-      addLog(`> ERROR: ${e.shortMessage || e.message}`);
-    } finally {
-      setIsRequestingSignature(false);
+      addLog(`> ERROR: ${e.message}`);
     }
   };
 
-  // Level 5 encode data
-  const handleEncodeCalldata = () => {
-    if (!isAddress(l5AddressInput)) {
-      addLog('> ERROR: INVALID ADDRESS FOR CALLDATA');
-      return;
-    }
-    try {
-      const data = encodeFunctionData({ abi: LEVEL5_ABI, functionName: "updateAddress", args: [l5AddressInput] });
-      setL5Calldata(data);
-      addLog('> CALLDATA_ENCODED ✓');
-    } catch (e: any) {
-      addLog(`> ERROR: ${e.shortMessage || e.message}`);
-    }
-  }
-
   return (
-    <main className="min-h-screen w-full max-w-full overflow-x-hidden bg-black text-[#00ff00] font-mono flex flex-col p-4 lg:p-6">
-      {/* HEADER */}
-      <header className="flex-none w-full flex justify-between items-center border-b border-[#00ff00]/30 pb-4 mb-4 lg:mb-5">
-        <h1 className="text-xl font-bold tracking-widest text-[#00ff00]">HACK_THE_CHAIN</h1>
-        <div className="flex items-center gap-6">
-          <span className="opacity-70 text-xs hidden sm:inline tracking-widest font-bold">LEVEL 0{selectedLevel} / 05</span>
+    <div className="min-h-screen bg-black text-[#00ff00] font-mono selection:bg-[#00ff00] selection:text-black flex flex-col items-center">
+      
+      {/* HEADER SECTION */}
+      <header className="w-full border-b border-[#00ff00]/30 bg-black/90 sticky top-0 z-50 shadow-[0_0_20px_rgba(0,255,0,0.15)]">
+        <div className="max-w-[1920px] mx-auto flex flex-wrap items-center justify-between p-4 gap-4">
+          <div className="flex flex-col">
+            <h1 className="text-xl md:text-3xl font-bold tracking-[0.2em] uppercase" style={{ textShadow: '0 0 10px rgba(0,255,0,0.5)' }}>HackTheChain</h1>
+            <div className="flex items-center gap-3 text-[10px] md:text-xs tracking-widest mt-1 opacity-80">
+              <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#00ff00] animate-pulse"></span> SYSTEM ONLINE</span>
+              <span className="hidden sm:inline border-l border-[#00ff00]/30 pl-3">SEPOLIA NETWORK</span>
+            </div>
+          </div>
           <ConnectButton />
         </div>
       </header>
 
       {/* MAIN CONTENT AREA */}
-      <div className="flex-grow w-full max-w-full grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 min-h-0">
+      <div className="flex-grow w-full max-w-[1920px] grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 p-4 lg:p-6 min-h-0">
         
         {/* LEFT COLUMN: COMMAND CENTER & LOGS */}
-        <div className="lg:col-span-4 xl:col-span-3 flex flex-col gap-4 lg:gap-5 min-w-0 min-h-0">
+        <div className="lg:col-span-4 xl:col-span-3 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
           
           <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
             <h2 className="text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest">COMMAND CENTER</h2>
             <div className="flex flex-col gap-3">
-              <div className="flex flex-row flex-wrap gap-2 mb-2">
-                <span className="flex-1 px-3 py-2.5 border border-[#00ff00] text-[#00ff00] text-[10px] sm:text-xs tracking-widest font-bold bg-[#00ff00]/10 text-center">
-                  [ LEVEL 0{selectedLevel} — {LEVEL_DATA[selectedLevel - 1].title} ]
-                </span>
+              <div className="flex justify-between items-center text-xs">
+                <span className="opacity-70 tracking-widest">CONNECTION</span>
+                <span className={isConnected ? "text-[#00ff00] font-bold" : "text-red-500 font-bold"}>{isConnected ? 'SECURE' : 'DISCONNECTED'}</span>
               </div>
-              <button
-                onClick={handleInitLevel}
-                disabled={!isConnected || !!targetAddress || isInitializing}
-                className="px-3 py-2.5 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-bold text-xs tracking-widest"
-              >
-                {isInitializing ? '[ INITIALIZING... ]' : `[ INITIALIZE LEVEL ${selectedLevel} ]`}
-              </button>
-              <button
-                onClick={handleVerifyHack}
-                disabled={!targetAddress || isVerifying || isSelectedLevelFullyComplete}
-                className="px-3 py-2.5 border border-red-500 text-red-500 hover:bg-red-500 hover:text-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-bold text-xs tracking-widest"
-              >
-                {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY HACK ]'}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
-            <h2 className="text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest">SYSTEM STATUS</h2>
-            <div className="flex flex-col gap-2.5 text-[10px] sm:text-xs">
-              <div className="flex justify-between">
-                <span className="opacity-70 tracking-widest">WALLET</span>
-                <span>{isConnected ? '● CONNECTED' : '○ DISCONNECTED'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="opacity-70 tracking-widest">TARGET</span>
-                <span>{targetAddress ? '● ACQUIRED' : '○ PENDING'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="opacity-70 tracking-widest">VAULT</span>
-                <span>{targetBalance ? `${formatEther(targetBalance.value)} ETH` : '---'}</span>
-              </div>
-              
-              {selectedLevel === 2 && registeredAttacker && (
-                <div className="flex justify-between">
-                  <span className="opacity-70 tracking-widest">ATTACKER</span>
-                  <span>● REGISTERED</span>
-                </div>
-              )}
-              {selectedLevel === 3 && l3OraclePriceRaw && (
-                <div className="flex justify-between">
-                  <span className="opacity-70 tracking-widest">ORACLE PRICE</span>
-                  <span>{formatEther(l3OraclePriceRaw as bigint)} ETH</span>
-                </div>
-              )}
-              {selectedLevel === 4 && l4SignerRaw && (
-                <div className="flex justify-between">
-                  <span className="opacity-70 tracking-widest">TRUSTED SIGNER</span>
-                  <span className="text-[10px] break-all max-w-[120px] text-right">{(l4SignerRaw as string).slice(0, 10)}...</span>
-                </div>
-              )}
-              {selectedLevel === 5 && l5OwnerRaw && (
-                <div className="flex justify-between">
-                  <span className="opacity-70 tracking-widest">PROXY OWNER</span>
-                  <span className="text-[10px] break-all max-w-[120px] text-right">{(l5OwnerRaw as string).slice(0, 10)}...</span>
-                </div>
-              )}
-
-              <div className="flex justify-between border-t border-[#00ff00]/30 pt-2 mt-1">
-                <span className="opacity-70 tracking-widest font-bold">LEVEL 0{selectedLevel} / 05</span>
-                <span className={`font-bold ${isSelectedLevelFullyComplete ? 'text-[#00ff00]' : ''}`}>
-                  {isSelectedLevelFullyComplete ? '✓ COMPLETE' : '○ IN PROGRESS'}
-                </span>
+              <div className="flex justify-between items-center text-xs">
+                <span className="opacity-70 tracking-widest">TARGET_STATUS</span>
+                {isComplete ? (
+                  <span className="text-[#00ff00] font-bold animate-pulse">COMPROMISED ✓</span>
+                ) : targetAddress ? (
+                  <span className="text-yellow-500 font-bold">ACTIVE</span>
+                ) : (
+                  <span className="opacity-50">UNINITIALIZED</span>
+                )}
               </div>
             </div>
           </div>
 
-          <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
-            <h2 className="flex-none text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest">TRANSACTION LOG</h2>
-            <div className="flex-grow overflow-y-auto text-[10px] sm:text-xs pr-2 flex flex-col gap-1 leading-relaxed">
-              {currentLogs.map((log, i) => formatLog(log, i))}
-              <div ref={logsEndRef} />
+          <div className="flex-grow border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] flex flex-col min-h-[300px]">
+            <h2 className="text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest flex justify-between">
+              <span>SYSTEM LOGS</span>
+              <span className="animate-pulse">_</span>
+            </h2>
+            <div className="flex-grow overflow-y-auto font-mono text-[10px] md:text-xs flex flex-col gap-1.5 opacity-90 pr-2">
+              {currentLogs.map((log, i) => (
+                <div key={i} className={`break-words whitespace-pre-wrap ${log.includes('ERROR') ? 'text-red-500' : log.includes('✓') ? 'text-[#00ff00] font-bold' : ''}`}>
+                  {log}
+                </div>
+              ))}
             </div>
           </div>
         </div>
 
         {/* MIDDLE COLUMN: MAIN WORKSPACE */}
-        <div className="lg:col-span-8 xl:col-span-6 flex flex-col gap-4 lg:gap-5 min-w-0 min-h-0 relative">
+        <div className="lg:col-span-8 xl:col-span-6 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
           
           {targetAddress ? (
             <>
               {/* LEVEL INFORMATION */}
-              <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] flex flex-col md:flex-row justify-between gap-4 md:items-center">
-                <div className="flex-none">
+              <div className="flex-none flex flex-col md:flex-row md:items-end justify-between gap-4 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
+                <div>
                   <h2 className="text-xs font-bold opacity-70 tracking-widest mb-1">LEVEL 0{selectedLevel}</h2>
                   <h3 className="text-xl lg:text-2xl font-bold tracking-widest">{LEVEL_DATA[selectedLevel - 1].title}</h3>
                 </div>
@@ -551,356 +419,199 @@ export default function Home() {
                 <div className="flex flex-col gap-1 md:items-end">
                   <span className="opacity-70 text-[10px] tracking-widest">TARGET INSTANCE</span>
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-mono text-[10px] sm:text-xs break-all">{targetAddress}</span>
-                    <button onClick={() => copyToClipboard(targetAddress)} className="text-[9px] border border-[#00ff00] px-1.5 py-0.5 hover:bg-[#00ff00] hover:text-black min-w-fit">COPY</button>
+                    <span className="font-mono text-sm break-all">{targetAddress}</span>
                   </div>
                 </div>
               </div>
 
-              {isSelectedLevelFullyComplete ? (
-                <div className="flex-grow flex flex-col items-center justify-center border-2 border-[#00ff00] bg-[#00ff00]/10 p-6 shadow-[0_0_30px_rgba(0,255,0,0.2)] min-h-0 text-center animate-fade-in">
-                  <h2 className="text-2xl lg:text-4xl font-bold mb-4 tracking-widest animate-pulse">&gt; ACCESS GRANTED</h2>
-                  <p className="text-lg lg:text-xl mb-2 tracking-widest">LEVEL 0{selectedLevel} COMPLETE</p>
-                  <p className="text-xs opacity-80 mb-6 tracking-widest">ON-CHAIN VERIFICATION PASSED</p>
-                  <p className="font-bold text-lg lg:text-xl border-t border-[#00ff00]/50 pt-4 tracking-widest">SOULBOUND BADGE #{selectedLevel} MINTED</p>
-                </div>
-              ) : selectedLevel === 1 ? (
-                <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
+              {/* LEVEL CONTENT */}
+              {selectedLevel === 1 ? (
+                <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
                   
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">LIVE CONTRACT STATE</h2>
-                  <div className="flex flex-col gap-2.5 text-[10px] sm:text-xs mb-6 font-mono">
-                    <div className="flex justify-between">
-                      <span className="opacity-70 tracking-widest">TARGET BALANCE</span>
-                      <span>{targetBalance ? `${formatEther(targetBalance.value)} ETH` : '---'}</span>
+                  <div className="flex justify-between items-center border-b border-[#00ff00]/30 pb-2 mb-4">
+                    <h2 className="text-xs font-bold tracking-widest">CHALLENGE: REENTRANCY</h2>
+                    <span className="text-[10px] opacity-70">TARGET IS VULNERABLE</span>
+                  </div>
+
+                  <p className="text-xs mb-6 opacity-80 leading-relaxed max-w-2xl">
+                    The target vault handles user balances but performs an external transfer before updating the state.
+                    Since TRC implements `ITRCReceiver` hooks (like ERC777), the recipient contract can re-enter `withdraw()` before its balance is zeroed.
+                    <br/><br/>
+                    Build your attack contract in Remix, fund it, and execute the attack to drain the vault's 100 TRC.
+                  </p>
+
+                  <div className="flex flex-col gap-4 mb-6">
+                    <div className="bg-black border border-[#00ff00]/30 relative group">
+                      <div className="absolute right-2 top-2 z-10">
+                        <button onClick={() => copyToClipboard(LEVEL1_SOURCE_CODE)} className="text-[10px] bg-[#00ff00]/10 border border-[#00ff00]/50 px-2 py-1 hover:bg-[#00ff00] hover:text-black">
+                          [ COPY SOURCE ]
+                        </button>
+                      </div>
+                      <pre className="p-4 text-[10px] font-mono text-[#00ff00]/70 overflow-x-auto whitespace-pre max-h-[300px]">
+                        {LEVEL1_SOURCE_CODE}
+                      </pre>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="opacity-70 tracking-widest">PLAYER ADDRESS</span>
-                      <span>{address || '---'}</span>
+
+                    <div className="bg-black border border-[#00ff00]/30 relative group">
+                      <div className="absolute right-2 top-2 z-10">
+                        <button onClick={() => copyToClipboard(LEVEL1_SKELETON)} className="text-[10px] bg-[#00ff00]/10 border border-[#00ff00]/50 px-2 py-1 hover:bg-[#00ff00] hover:text-black">
+                          [ COPY SKELETON ]
+                        </button>
+                      </div>
+                      <pre className="p-4 text-[10px] font-mono text-[#00ff00]/70 overflow-x-auto whitespace-pre max-h-[250px]">
+                        {LEVEL1_SKELETON}
+                      </pre>
                     </div>
                   </div>
 
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">CONTRACT SOURCE</h2>
-                  <div className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 mb-6 overflow-x-auto text-[10px] font-mono leading-relaxed whitespace-pre">
-                    {LEVEL1_SOURCE_CODE}
-                  </div>
-
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">CONTRACT INTERFACE</h2>
-                  <div className="flex flex-col gap-4 text-xs font-mono tracking-wide mb-6">
-                    <div className="flex flex-col p-3 border border-[#00ff00]/30 bg-[#00ff00]/5 gap-2">
-                      <div className="flex items-center justify-between">
-                        <span>owner()</span>
-                        <button onClick={handleReadOwner} className="px-3 py-1 border border-[#00ff00] hover:bg-[#00ff00]/20 text-[10px]">[ READ ]</button>
-                      </div>
-                      {l1OwnerResult && <div className="text-[10px] opacity-70 break-all pt-2 border-t border-[#00ff00]/20">↳ {l1OwnerResult}</div>}
-                    </div>
-                    
-                    <div className="flex flex-col p-3 border border-[#00ff00]/30 bg-[#00ff00]/5 gap-2">
-                      <div className="flex items-center justify-between">
-                        <span>isComplete()</span>
-                        <button onClick={handleReadIsComplete} className="px-3 py-1 border border-[#00ff00] hover:bg-[#00ff00]/20 text-[10px]">[ READ ]</button>
-                      </div>
-                      {l1IsCompleteResult && <div className="text-[10px] opacity-70 break-all pt-2 border-t border-[#00ff00]/20">↳ {l1IsCompleteResult}</div>}
-                    </div>
-                    
-                    <div className="flex flex-col gap-3 p-3 border border-[#00ff00]/30 bg-[#00ff00]/5">
-                      <span>withdrawAll(address recipient)</span>
-                      <input type="text" value={l1Recipient} onChange={(e) => setL1Recipient(e.target.value)} placeholder="Recipient address (0x...)" className="bg-black border border-[#00ff00]/50 p-2 outline-none focus:border-[#00ff00] font-mono text-[10px] w-full transition-all" />
-                      <button onClick={async () => {
-                        addLog(`> CALL withdrawAll(${l1Recipient})`);
-                        await executeGenericTx(targetAddress, LEVEL1_ABI, 'withdrawAll', [l1Recipient], '0', 'withdrawAll');
-                        refetchTarget();
-                      }} disabled={isExploiting || !isAddress(l1Recipient)} className="w-full px-4 py-2 bg-transparent border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-all font-bold text-xs disabled:opacity-50 tracking-widest break-words">
-                        {isExploiting ? '[ SUBMITTING... ]' : '[ CALL withdrawAll ]'}
-                      </button>
-                    </div>
-                  </div>
-
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest cursor-pointer hover:text-[#00ff00]/70" onClick={() => setL1HintLevel(Math.max(1, l1HintLevel))}>
-                    [ ? HINTS ]
-                  </h2>
-                  {l1HintLevel > 0 && (
-                    <div className="flex flex-col gap-3 font-mono text-[10px] opacity-80 pl-2 border-l border-[#00ff00]/30">
-                      <div>
-                        <span className="font-bold text-[#00ff00]">HINT 1: </span>
-                        Inspect the contract's owner variable and compare it with the functions that move funds.
-                      </div>
-                      {l1HintLevel >= 2 ? (
-                        <div>
-                          <span className="font-bold text-[#00ff00]">HINT 2: </span>
-                          Who is allowed to call withdrawAll()?
-                        </div>
-                      ) : (
-                        <button onClick={() => setL1HintLevel(2)} className="text-left hover:text-[#00ff00]">[ REVEAL HINT 2 ]</button>
-                      )}
-                      
-                      {l1HintLevel >= 3 ? (
-                        <div>
-                          <span className="font-bold text-[#00ff00]">HINT 3: </span>
-                          Does withdrawAll() actually verify the caller?
-                        </div>
-                      ) : l1HintLevel >= 2 ? (
-                        <button onClick={() => setL1HintLevel(3)} className="text-left hover:text-[#00ff00]">[ REVEAL HINT 3 ]</button>
-                      ) : null}
-                    </div>
+                  {isComplete && (
+                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                     </button>
                   )}
                 </div>
               ) : selectedLevel === 2 ? (
-                <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
+                <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
+                  <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">MARKET MANIPULATION CONSOLE</h2>
                   
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">LIVE CONTRACT STATE</h2>
-                  <div className="flex flex-col gap-2.5 text-[10px] sm:text-xs mb-6 font-mono">
-                    <div className="flex justify-between">
-                      <span className="opacity-70 tracking-widest">TARGET BALANCE</span>
-                      <span>{targetBalance ? `${formatEther(targetBalance.value)} ETH` : '---'}</span>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
+                      <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">MARKET STATE (AMM)</div>
+                      <div className="flex justify-between text-xs"><span>MKT RESERVE:</span> <span>{l2AmmReserveMkt ? formatEther(l2AmmReserveMkt) : '---'} MKT</span></div>
+                      <div className="flex justify-between text-xs"><span>TRC RESERVE:</span> <span>{l2AmmReserveTrace ? formatEther(l2AmmReserveTrace) : '---'} TRC</span></div>
+                      <div className="flex justify-between text-xs font-bold text-yellow-400 mt-1 border-t border-[#00ff00]/20 pt-1"><span>ORACLE PRICE:</span> <span>{l2OraclePrice ? formatEther(l2OraclePrice) : '---'} TRC / MKT</span></div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="opacity-70 tracking-widest">PLAYER ADDRESS</span>
-                      <span>{address || '---'}</span>
+                    
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col gap-2">
+                      <div className="text-[10px] opacity-70 tracking-widest border-b border-[#00ff00]/20 pb-1">PLAYER BALANCES</div>
+                      <div className="flex justify-between text-xs"><span>MKT (Collateral):</span> <span>{l2PlayerMkt ? formatEther(l2PlayerMkt) : '---'} MKT</span></div>
+                      <div className="flex justify-between text-xs"><span>TRC (Capital):</span> <span>{l2PlayerTrace ? formatEther(l2PlayerTrace) : '---'} TRC</span></div>
                     </div>
                   </div>
 
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">CONTRACT SOURCE</h2>
-                  <div className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 mb-6 overflow-x-auto text-[10px] font-mono leading-relaxed whitespace-pre">
-                    {LEVEL2_SOURCE_CODE}
+                  <div className="border border-red-500/50 p-3 bg-red-500/5 mb-6 flex justify-between items-center">
+                    <span className="text-[10px] text-red-500 tracking-widest font-bold">TARGET VAULT BALANCE</span>
+                    <span className="text-red-500 font-bold font-mono">{l2VaultTrace ? formatEther(l2VaultTrace) : '---'} TRC</span>
                   </div>
 
+                  <div className="flex flex-col gap-3">
+                    <div className="text-[10px] opacity-70 tracking-widest">ATTACK SEQUENCE</div>
+                    
+                    {/* STEP 1 */}
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <button onClick={() => executeGenericTx(l2TraceAddress, TRACE_ABI, 'approve', [l2AmmAddress, parseEther('40')], '0', 'approve TRC')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
+                        1. [ APPROVE 40 TRC TO AMM ]
+                      </button>
+                      <button onClick={() => executeGenericTx(l2AmmAddress, LEVEL2_AMM_ABI, 'swapTRACEForMKT', [parseEther('40')], '0', 'swapTRACEForMKT')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
+                        2. [ SWAP 40 TRC FOR MKT ]
+                      </button>
+                    </div>
 
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">BUILD YOUR ATTACK CONTRACT</h2>
-                  <p className="opacity-80 text-xs leading-relaxed mb-4">
-                    Analyze the target contract and construct your own attack contract.
-                  </p>
-                  
-                  <div className="flex justify-end mb-2">
-                    <button onClick={() => copyToClipboard(LEVEL2_SKELETON)} className="px-3 py-1 border border-[#00ff00] hover:bg-[#00ff00]/20 text-[10px] tracking-widest">
-                      [ COPY SKELETON ]
+                    {/* STEP 2 */}
+                    <div className="flex flex-col sm:flex-row gap-2 mt-2">
+                      <button onClick={() => executeGenericTx(l2MktAddress, MKT_ABI, 'approve', [targetAddress, parseEther('10')], '0', 'approve MKT')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
+                        3. [ APPROVE 10 MKT TO VAULT ]
+                      </button>
+                      <button onClick={() => executeGenericTx(targetAddress, LEVEL2_ABI, 'deposit', [parseEther('10')], '0', 'deposit')} disabled={isExploiting} className="flex-1 border border-[#00ff00]/50 hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest text-left">
+                        4. [ DEPOSIT 10 MKT COLLATERAL ]
+                      </button>
+                    </div>
+
+                    {/* STEP 3 */}
+                    <button onClick={() => executeGenericTx(targetAddress, LEVEL2_ABI, 'borrow', [parseEther('100')], '0', 'borrow')} disabled={isExploiting} className="w-full border-2 border-red-500/50 hover:bg-red-500/20 text-red-500 p-4 text-xs tracking-widest font-bold mt-2">
+                      5. [ EXPLOIT: BORROW 100 TRC ]
                     </button>
                   </div>
-                  <div className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-3 mb-6 overflow-x-auto text-[10px] font-mono leading-relaxed whitespace-pre">
-                    {LEVEL2_SKELETON}
-                  </div>
 
-
-
-                  {!registeredAttacker ? (
-                    <div className="flex flex-col gap-2 mt-auto">
-                      <label className="text-[10px] tracking-widest opacity-70">ATTACK CONTRACT ADDRESS</label>
-                      <div className="flex flex-col sm:flex-row gap-3">
-                        <input type="text" value={attackerInput} onChange={(e) => setAttackerInput(e.target.value)} placeholder="0x..." className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all min-w-0" />
-                        <button onClick={handleRegisterAttacker} className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-colors font-bold text-xs tracking-widest whitespace-nowrap">
-                          [ REGISTER CONTRACT ]
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col h-full gap-4 border border-[#00ff00] p-4 bg-[#00ff00]/10">
-                      <div className="flex flex-col border-b border-[#00ff00]/30 pb-2 gap-1">
-                        <span className="text-xs font-bold tracking-widest text-[#00ff00]">ATTACK CONTRACT REGISTERED ✓</span>
-                        <span className="font-mono text-[10px] break-all opacity-70">Registered:<br/>{registeredAttacker}</span>
-                      </div>
-                      <div className="flex-grow flex flex-col gap-4">
-                        <div className="font-mono text-xs text-[#00ff00]">attack()</div>
-                        <div className="flex flex-col gap-2">
-                          <label className="text-[10px] tracking-widest opacity-70">ETH AMOUNT TO SEND</label>
-                          <input 
-                            type="text" 
-                            value={l2AttackAmount} 
-                            onChange={(e) => setL2AttackAmount(e.target.value)} 
-                            placeholder="0.001" 
-                            className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-2 outline-none focus:border-[#00ff00] font-mono text-xs transition-all w-full" 
-                          />
-                        </div>
-                        <button onClick={async () => {
-                          const amt = Number(l2AttackAmount);
-                          if (isNaN(amt) || amt <= 0) {
-                            addLog("> ERROR: INVALID ETH AMOUNT");
-                            return;
-                          }
-                          addLog(`> CALL attacker.attack() [VALUE: ${l2AttackAmount} ETH]`);
-                          const success = await executeGenericTx(registeredAttacker as `0x${string}`, ATTACKER_ABI, 'attack', [], l2AttackAmount, 'attack');
-                          if (success && publicClient && targetAddress) {
-                            try {
-                              const isCompleteRes = await publicClient.readContract({
-                                address: targetAddress,
-                                abi: LEVEL2_ABI,
-                                functionName: 'isComplete'
-                              });
-                              if (isCompleteRes) {
-                                addLog('> ATTACK_EXECUTED ✓\n> LEVEL_02_COMPLETE ✓');
-                                handleVerifyHack();
-                              }
-                            } catch (e) {}
-                          }
-                        }} disabled={isExploiting} className="w-full px-4 py-4 mt-auto bg-transparent border-2 border-[#00ff00] hover:bg-[#00ff00] hover:text-black transition-all font-bold text-base disabled:opacity-50 tracking-widest break-words">
-                          {isExploiting ? '[ SUBMITTING... ]' : '[ EXECUTE attack() ]'}
-                        </button>
-                      </div>
-                    </div>
+                  {isComplete && (
+                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                     </button>
                   )}
                 </div>
               ) : selectedLevel === 3 ? (
-                <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">MARKET MANIPULATION</h2>
+                <div className="flex-grow flex flex-col border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
+                  <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">SIGNATURE REPLAY</h2>
                   
-                  <div className="flex flex-col gap-3 mb-6">
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="opacity-70 w-16">TOKEN:</span><span className="font-mono text-[#00ff00] break-all">{l3TokenRaw as string || '...'}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="opacity-70 w-16">AMM:</span><span className="font-mono text-[#00ff00] break-all">{l3AmmRaw as string || '...'}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="opacity-70 w-16">ORACLE:</span><span className="font-mono text-[#00ff00] break-all">{l3OracleRaw as string || '...'}</span>
-                    </div>
+                  <p className="text-xs mb-6 opacity-80 leading-relaxed">
+                    The backend signer provides valid signatures authorizing a 10 TRC withdrawal for your address.
+                    Since the signature is never invalidated (no nonce), you can replay it multiple times to drain the vault.
+                  </p>
+
+                  <div className="border border-red-500/50 p-3 bg-red-500/5 mb-6 flex justify-between items-center">
+                    <span className="text-[10px] text-red-500 tracking-widest font-bold">TARGET VAULT BALANCE</span>
+                    <span className="text-red-500 font-bold font-mono">{l3VaultTrace ? formatEther(l3VaultTrace) : '---'} TRC</span>
                   </div>
 
-                  <div className="flex flex-col gap-6">
-                    <div className="flex flex-col md:flex-row gap-3 md:items-end">
-                      <div className="flex-grow">
-                        <label className="text-[10px] tracking-widest opacity-70 block mb-1">1. CLAIM AIRDROP</label>
-                        <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'claimAirdrop', [], '0', 'claimAirdrop')} disabled={isExploiting || l3HasClaimed} className={`w-full p-3 border text-xs tracking-widest text-left ${!l3HasClaimed ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                          [ CALL claimAirdrop() ]
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row gap-3 md:items-end border-t border-[#00ff00]/20 pt-4">
-                      <div className="flex-1">
-                        <label className="text-[10px] tracking-widest opacity-70 block mb-1">2. SWAP ETH (MANIPULATE ORACLE)</label>
-                        <input type="text" value={l3SwapAmount} onChange={(e) => setL3SwapAmount(e.target.value)} placeholder="0.1 ETH" disabled={isExploiting || !l3HasClaimed || l3HasManipulated} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 outline-none focus:border-[#00ff00] font-mono text-xs w-full disabled:opacity-50" />
-                      </div>
-                      <button onClick={() => l3AmmRaw && executeGenericTx(l3AmmRaw as `0x${string}`, LEVEL3_AMM_ABI, 'swapETHForTokens', [], l3SwapAmount, 'swapETHForTokens')} disabled={isExploiting || !l3AmmRaw || !l3HasClaimed || l3HasManipulated} className={`flex-1 p-3 border text-xs tracking-widest ${l3HasClaimed && !l3HasManipulated ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                        [ CALL swapETHForTokens() ]
-                      </button>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row gap-3 md:items-end border-t border-[#00ff00]/20 pt-4">
-                      <div className="flex-1">
-                        <label className="text-[10px] tracking-widest opacity-70 block mb-1">3. APPROVE COLLATERAL</label>
-                        <input type="text" value={l3ApproveAmount} onChange={(e) => setL3ApproveAmount(e.target.value)} placeholder="Tokens (wei)" disabled={isExploiting || !l3HasManipulated || l3HasApproved} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 outline-none focus:border-[#00ff00] font-mono text-xs w-full disabled:opacity-50" />
-                      </div>
-                      <button onClick={() => l3TokenRaw && executeGenericTx(l3TokenRaw as `0x${string}`, MOCK_TOKEN_ABI, 'approve', [targetAddress, BigInt(l3ApproveAmount)], '0', 'approve')} disabled={isExploiting || !l3TokenRaw || !l3HasManipulated || l3HasApproved || !l3ApproveAmount} className={`flex-1 p-3 border text-xs tracking-widest ${l3HasManipulated && !l3HasApproved ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                        [ CALL approve(vault, amount) ]
-                      </button>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row gap-3 md:items-end border-t border-[#00ff00]/20 pt-4">
-                      <div className="flex-1">
-                        <label className="text-[10px] tracking-widest opacity-70 block mb-1">4. DEPOSIT COLLATERAL</label>
-                        <input type="text" value={l3DepositAmount} onChange={(e) => setL3DepositAmount(e.target.value)} placeholder="Tokens (wei)" disabled={isExploiting || !l3HasApproved || l3HasDeposited} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 outline-none focus:border-[#00ff00] font-mono text-xs w-full disabled:opacity-50" />
-                      </div>
-                      <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'deposit', [BigInt(l3DepositAmount)], '0', 'deposit')} disabled={isExploiting || !l3HasApproved || l3HasDeposited || !l3DepositAmount} className={`flex-1 p-3 border text-xs tracking-widest ${l3HasApproved && !l3HasDeposited ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                        [ CALL deposit(amount) ]
-                      </button>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row gap-3 md:items-end border-t border-[#00ff00]/20 pt-4">
-                      <div className="flex-1">
-                        <label className="text-[10px] tracking-widest opacity-70 block mb-1">5. BORROW EXCESSIVE ETH</label>
-                        <input type="text" value={l3BorrowAmount} onChange={(e) => setL3BorrowAmount(e.target.value)} placeholder="ETH" disabled={isExploiting || !l3HasDeposited} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 outline-none focus:border-[#00ff00] font-mono text-xs w-full disabled:opacity-50" />
-                      </div>
-                      <button onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'borrow', [parseEther(l3BorrowAmount)], '0', 'borrow')} disabled={isExploiting || !l3HasDeposited} className={`flex-1 p-3 border text-xs tracking-widest ${l3HasDeposited ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                        [ CALL borrow(amount) ]
-                      </button>
-                    </div>
-
-                  </div>
-                </div>
-              ) : selectedLevel === 4 ? (
-                <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">SIGNATURE REPLAY</h2>
-                  
-                  <div className="flex flex-col gap-6 text-[10px] sm:text-xs">
-
-                    
-                    <div className="flex flex-col gap-2">
-                      <label className="text-[10px] tracking-widest opacity-70">WITHDRAWAL AMOUNT (ETH)</label>
-                      <div className="flex gap-3">
-                        <input type="text" value={l4AmountInput} onChange={(e) => setL4AmountInput(e.target.value)} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-3 flex-grow outline-none focus:border-[#00ff00] font-mono transition-all" />
-                        <button onClick={() => address && requestLevel4Signature(targetAddress, address, l4AmountInput)} disabled={isRequestingSignature} className="px-4 py-3 border border-[#00ff00] hover:bg-[#00ff00]/20 tracking-widest disabled:opacity-50 whitespace-nowrap">
-                          {isRequestingSignature ? '[ REQUESTING... ]' : '[ REQUEST SIGNATURE ]'}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-2">
-                      <label className="text-[10px] tracking-widest opacity-70">VALID SIGNATURE</label>
-                      <textarea readOnly value={l4Signature} placeholder="0x..." className="bg-black border border-[#00ff00]/30 p-3 text-[#00ff00]/80 h-24 font-mono break-all resize-none outline-none" />
-                    </div>
-
-                    <button 
-                      onClick={() => l4Signature && executeGenericTx(targetAddress, LEVEL4_ABI, 'withdraw', [address, parseEther(l4AmountInput), l4Signature as `0x${string}`], '0', 'withdraw')} 
-                      disabled={!l4Signature || isExploiting} 
-                      className={`p-4 border font-bold text-sm tracking-widest ${l4Signature ? 'border-[#00ff00] hover:bg-[#00ff00] hover:text-black' : 'border-[#00ff00]/30 text-[#00ff00]/30 cursor-not-allowed'}`}
-                    >
-                      [ SEND TRANSACTION: withdraw() ]
+                  <div className="flex flex-col gap-4 mb-6">
+                    <button onClick={handleRequestSignature} className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest">
+                      [ 1. REQUEST 10 TRC SIGNATURE FROM BACKEND ]
                     </button>
-                  </div>
-                </div>
-              ) : selectedLevel === 5 ? (
-                <div className="flex-grow flex flex-col min-h-0 border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] overflow-y-auto">
-                  <h2 className="flex-none text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">STORAGE COLLISION</h2>
-                  
-                  <div className="flex flex-col gap-3 mb-6">
-
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="opacity-70 w-24">PROXY:</span><span className="font-mono text-[#00ff00] break-all">{targetAddress}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[10px]">
-                      <span className="opacity-70 w-24">IMPLEMENTATION:</span><span className="font-mono text-[#00ff00] break-all">{l5ImplRaw as string || '...'}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-6">
-                    <div className="flex flex-col gap-2 p-4 border border-[#00ff00]/30 bg-[#00ff00]/5">
-                      <span className="text-[10px] tracking-widest opacity-70">1. ENCODE PAYLOAD</span>
-                      <span className="text-[#00ff00] text-xs font-mono mb-2">updateAddress(address)</span>
-                      <div className="flex gap-3">
-                        <input type="text" value={l5AddressInput} onChange={(e) => setL5AddressInput(e.target.value)} placeholder="0x..." className="bg-black border border-[#00ff00]/50 p-2 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all" />
-                        <button onClick={handleEncodeCalldata} className="px-3 border border-[#00ff00] hover:bg-[#00ff00]/20 text-xs tracking-widest whitespace-nowrap">
-                          [ ENCODE ]
-                        </button>
-                      </div>
-                      {l5Calldata && <div className="mt-2 text-[10px] font-mono break-all opacity-80">{l5Calldata}</div>}
-                    </div>
-
-                    <div className="flex flex-col gap-2">
-                      <span className="text-[10px] tracking-widest opacity-70">2. EXECUTE DELEGATECALL</span>
-                      <button onClick={async () => {
-                        await executeGenericTx(targetAddress, LEVEL5_ABI, 'execute', [l5Calldata], '0', 'execute');
-                      }} disabled={isExploiting || !l5Calldata || l5OwnerRaw === address} className={`p-3 border text-xs tracking-widest ${l5Calldata && l5OwnerRaw !== address ? 'border-[#00ff00] hover:bg-[#00ff00]/20' : 'border-[#00ff00]/30 text-[#00ff00]/30'}`}>
-                        [ CALL execute(bytes) ]
-                      </button>
-                    </div>
                     
-                    <div className="flex flex-col gap-2 border-t border-[#00ff00]/30 pt-4">
-                      <span className="text-[10px] tracking-widest opacity-70">3. WITHDRAW AS OWNER</span>
-                      <div className="flex gap-3">
-                        <input type="text" value={l5WithdrawRecipient} onChange={(e) => setL5WithdrawRecipient(e.target.value)} placeholder="0x..." disabled={l5OwnerRaw !== address} className="bg-[#00ff00]/5 border border-[#00ff00]/50 p-2 flex-grow outline-none focus:border-[#00ff00] font-mono text-xs transition-all disabled:opacity-50" />
-                        <button onClick={() => executeGenericTx(targetAddress, LEVEL5_ABI, 'withdraw', [l5WithdrawRecipient], '0', 'withdraw')} disabled={isExploiting || l5OwnerRaw !== address} className={`px-4 border text-xs tracking-widest ${l5OwnerRaw === address ? 'border-[#00ff00] hover:bg-[#00ff00] hover:text-black font-bold' : 'border-[#00ff00]/30 text-[#00ff00]/30 cursor-not-allowed'}`}>
-                          [ CALL withdraw(recipient) ]
+                    {l3Signature && (
+                      <div className="flex flex-col gap-2">
+                        <span className="text-[10px] tracking-widest opacity-70">VALID SIGNATURE</span>
+                        <textarea readOnly value={l3Signature} className="bg-[#00ff00]/5 border border-[#00ff00]/30 p-2 font-mono text-[10px] break-all outline-none resize-none h-16" />
+                        
+                        <button 
+                          onClick={() => executeGenericTx(targetAddress, LEVEL3_ABI, 'withdraw', [address, parseEther('10'), l3Signature as `0x${string}`], '0', 'withdraw')}
+                          disabled={isExploiting}
+                          className="border border-[#00ff00] hover:bg-[#00ff00]/20 p-3 text-xs tracking-widest mt-2"
+                        >
+                          [ 2. SUBMIT WITHDRAWAL (REPLAYABLE) ]
                         </button>
                       </div>
-                    </div>
+                    )}
                   </div>
+
+                  {isComplete && (
+                     <button onClick={handleVerifyHack} disabled={isVerifying} className="w-full py-4 mt-auto border-2 border-[#00ff00] bg-[#00ff00]/10 hover:bg-[#00ff00] hover:text-black transition-all font-bold tracking-widest mt-6">
+                        {isVerifying ? '[ VERIFYING... ]' : '[ VERIFY ON-CHAIN ]'}
+                     </button>
+                  )}
                 </div>
               ) : null}
             </>
           ) : (
-            <div className="flex-grow border border-[#00ff00] bg-black p-8 shadow-[0_0_15px_rgba(0,255,0,0.1)] flex flex-col items-center justify-center text-center">
-              <h2 className="text-xl sm:text-3xl mb-6 font-bold tracking-widest animate-pulse break-words">_SYSTEM_READY</h2>
-              <p className="opacity-80 max-w-lg leading-relaxed tracking-wide text-xs sm:text-sm px-2">
-                Welcome, operative. Connect your Sepolia wallet and initialize Level {selectedLevel} to spawn your isolated target instance.
-              </p>
+            <div className="flex-grow flex flex-col items-center justify-center border border-[#00ff00] bg-black p-8 shadow-[0_0_15px_rgba(0,255,0,0.1)] relative">
+              <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#00ff00]/10 via-transparent to-transparent opacity-50 pointer-events-none"></div>
+              
+              <div className="text-center z-10 flex flex-col items-center max-w-lg">
+                <div className="w-16 h-16 border-2 border-[#00ff00] rounded-full flex items-center justify-center mb-6 shadow-[0_0_15px_rgba(0,255,0,0.3)]">
+                  <span className="text-2xl font-bold">0{selectedLevel}</span>
+                </div>
+                
+                <h2 className="text-xl md:text-2xl font-bold tracking-widest mb-4">LEVEL 0{selectedLevel}: {LEVEL_DATA[selectedLevel - 1].title}</h2>
+                <p className="text-sm opacity-70 leading-relaxed mb-8 font-mono">
+                  Target system identified. Ready to provision vulnerable contract instance on the Sepolia network. Stand by for deployment.
+                </p>
+                
+                <button 
+                  onClick={handleInitialize} 
+                  disabled={!isConnected || isInitializing}
+                  className={`px-8 py-4 border-2 font-bold tracking-widest transition-all w-full max-w-xs ${
+                    !isConnected ? 'border-red-500/50 text-red-500/50 cursor-not-allowed' :
+                    isInitializing ? 'border-[#00ff00]/50 text-[#00ff00]/50 cursor-wait' :
+                    'border-[#00ff00] text-[#00ff00] hover:bg-[#00ff00] hover:text-black shadow-[0_0_15px_rgba(0,255,0,0.2)] hover:shadow-[0_0_25px_rgba(0,255,0,0.5)]'
+                  }`}
+                >
+                  {isInitializing ? '[ INITIALIZING... ]' : '[ INITIALIZE TARGET ]'}
+                </button>
+                
+                {!isConnected && (
+                  <p className="text-red-500 mt-4 text-[10px] tracking-widest font-mono">WALLET CONNECTION REQUIRED</p>
+                )}
+              </div>
             </div>
           )}
         </div>
         
         {/* RIGHT COLUMN: LEVEL NAVIGATION */}
-        <div className="xl:col-span-3 lg:col-span-12 flex flex-col gap-4 lg:gap-5 min-w-0 min-h-0">
-          <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)]">
-            <h2 className="text-xs font-bold mb-3 border-b border-[#00ff00]/30 pb-2 tracking-widest">LEVELS</h2>
-            <div className="flex flex-col gap-2">
-              {LEVEL_DATA.map(level => {
+        <div className="xl:col-span-3 lg:col-span-12 flex flex-col gap-4 lg:gap-5 min-w-0 h-full">
+          <div className="flex-none border border-[#00ff00] bg-black p-4 lg:p-5 shadow-[0_0_15px_rgba(0,255,0,0.1)] h-full flex flex-col">
+            <h2 className="text-xs font-bold mb-4 border-b border-[#00ff00]/30 pb-2 tracking-widest">LEVEL NAVIGATION</h2>
+            <div className="flex flex-col gap-3">
+              {LEVEL_DATA.map((level) => {
                 const isUnlocked = level.id === 1 || isLevelSolvedGlobal(level.id - 1);
                 const isCurrent = level.id === selectedLevel;
                 const isCompleted = isLevelSolvedGlobal(level.id) || (isCurrent && isLevelCompleteLocally);
@@ -908,11 +619,11 @@ export default function Home() {
                 return (
                   <button 
                     key={level.id}
-                    onClick={() => isUnlocked && setSelectedLevel(level.id as 1|2|3|4|5)}
+                    onClick={() => isUnlocked && setSelectedLevel(level.id as 1|2|3)}
                     disabled={!isUnlocked}
                     className={`flex flex-col text-left p-3 border transition-all min-w-0 ${
                       !isUnlocked ? 'border-red-500/30 opacity-40 cursor-not-allowed text-red-500' :
-                      isCurrent ? 'border-[#00ff00] bg-[#00ff00]/10 text-[#00ff00]' :
+                      isCurrent ? 'border-[#00ff00] bg-[#00ff00]/10 text-[#00ff00] shadow-[0_0_10px_rgba(0,255,0,0.2)]' :
                       'border-[#00ff00]/30 hover:bg-[#00ff00]/10 text-[#00ff00]'
                     }`}
                   >
@@ -920,16 +631,15 @@ export default function Home() {
                       <span className="w-4 flex-shrink-0 text-center">{isCompleted ? '✓' : isCurrent ? '→' : !isUnlocked ? '🔒' : ' '}</span>
                       <span className="truncate">LEVEL 0{level.id}</span>
                     </div>
-                    <div className="text-[9px] sm:text-[10px] opacity-70 tracking-widest mt-1 ml-6 truncate">{level.title}</div>
+                    <div className="text-[10px] mt-1 opacity-70 ml-6 tracking-widest truncate">{level.title}</div>
                   </button>
-                )
+                );
               })}
             </div>
           </div>
         </div>
 
       </div>
-    </main>
+    </div>
   );
 }
-// force recompile
