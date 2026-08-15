@@ -4,10 +4,6 @@
 node_modules/
 .next/
 
-contracts/cache/
-contracts/out/
-contracts/broadcast/
-
 # Foundry
 contracts/out/
 contracts/cache/

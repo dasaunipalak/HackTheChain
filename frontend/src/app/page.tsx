@@ -14,6 +14,13 @@ import {
   LEVEL2_AMM_ABI,
   LEVEL2_ORACLE_ABI,
 } from './config';
+import {
+  LEVEL2_TARGET_SOURCE,
+  VULNERABLE_ORACLE_SOURCE,
+  SIMPLE_AMM_SOURCE,
+  stripComments
+} from './l2sources';
+import { LEVEL3_TARGET_SOURCE } from './l3sources';
 
 const LEVEL1_SOURCE_CODE = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
@@ -241,6 +248,15 @@ export default function Home() {
     functionName: 'trace',
   });
   const factoryTraceAddress = factoryTraceAddressRaw as `0x${string}` | undefined;
+
+  const { data: l1PlayerTrace, refetch: refetchL1PlayerTrace } = useReadContract({
+    address: factoryTraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [address as `0x${string}`], query: { enabled: !!factoryTraceAddress && !!address }
+  });
+  const { data: l1VaultTrace, refetch: refetchL1VaultTrace } = useReadContract({
+    address: factoryTraceAddress, abi: TRACE_ABI, functionName: 'balanceOf', args: [targetAddress as `0x${string}`], query: { enabled: !!factoryTraceAddress && !!targetAddress }
+  });
+
+
   const [l1AttackerInput, setL1AttackerInput] = useState('');
   const [isL1Funding, setIsL1Funding] = useState(false);
   const [l2AttackerInput, setL2AttackerInput] = useState('');
@@ -304,7 +320,37 @@ export default function Home() {
   const { data: l3VaultTrace, refetch: refetchL3VaultTrace } = useReadContract({
     address: l3TraceAddress as `0x${string}`, abi: TRACE_ABI, functionName: 'balanceOf', args: [targetAddress as `0x${string}`], query: { enabled: !!l3TraceAddress && !!targetAddress }
   });
+  const { data: l3PlayerTrace, refetch: refetchL3PlayerTrace } = useReadContract({
+    address: l3TraceAddress as `0x${string}`, abi: TRACE_ABI, functionName: 'balanceOf', args: [address as `0x${string}`], query: { enabled: !!l3TraceAddress && !!address }
+  });
   const [l3Signature, setL3Signature] = useState('');
+
+  // --------------------------------------------------------
+  // REFETCH POLLING
+  // --------------------------------------------------------
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetchL1PlayerTrace?.();
+      refetchL1VaultTrace?.();
+      refetchL2PlayerMkt?.();
+      refetchL2PlayerTrace?.();
+      refetchL2VaultTrace?.();
+      refetchL2OraclePrice?.();
+      refetchL2ReserveMkt?.();
+      refetchL2ReserveTrace?.();
+      refetchL3PlayerTrace?.();
+      refetchL3VaultTrace?.();
+      refetchIsComplete?.();
+      refetchSolved?.();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [
+    refetchL1PlayerTrace, refetchL1VaultTrace,
+    refetchL2PlayerMkt, refetchL2PlayerTrace, refetchL2VaultTrace,
+    refetchL2OraclePrice, refetchL2ReserveMkt, refetchL2ReserveTrace,
+    refetchL3PlayerTrace, refetchL3VaultTrace,
+    refetchIsComplete, refetchSolved
+  ]);
 
 
   // --------------------------------------------------------
@@ -349,7 +395,7 @@ export default function Home() {
     setIsL2Funding(true);
     try {
       addLog(`> TRANSFERRING ASSETS TO ATTACKER...`);
-      
+
       const hash1 = await writeContractAsync({
         address: l2MktAddress as `0x${string}`,
         abi: MKT_ABI,
@@ -358,7 +404,7 @@ export default function Home() {
       });
       addLog(`> TX 1 (10 MKT) SUBMITTED: ${hash1.slice(0, 10)}...`);
       await publicClient?.waitForTransactionReceipt({ hash: hash1 });
-      
+
       const hash2 = await writeContractAsync({
         address: factoryTraceAddress as `0x${string}`,
         abi: TRACE_ABI,
@@ -588,6 +634,17 @@ export default function Home() {
                     <span className="text-[10px] opacity-70">TARGET IS VULNERABLE</span>
                   </div>
 
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-6">
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">PLAYER TRC BALANCE</span>
+                      <span className="font-mono text-[11px] text-[#00ff00] font-bold mt-1">{l1PlayerTrace !== undefined ? formatEther(l1PlayerTrace) : '---'} TRC</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">VAULT TRC BALANCE</span>
+                      <span className="font-mono text-[11px] text-red-500 font-bold mt-1">{l1VaultTrace !== undefined ? formatEther(l1VaultTrace) : '---'} TRC</span>
+                    </div>
+                  </div>
+
                   <p className="text-xs mb-6 opacity-80 leading-relaxed max-w-2xl">
                     Analyze the target contract and find a way to drain the vault's 100 TRC. Use the provided attacker skeleton to build your exploit in Remix. Deploy your attacker contract, fund it using the interface below, execute the attack, and return here once the vault balance reaches zero.
                   </p>
@@ -647,14 +704,45 @@ export default function Home() {
                   <h2 className="text-xs font-bold border-b border-[#00ff00]/30 pb-2 mb-4 tracking-widest">ORACLE MANIPULATION</h2>
 
                   <p className="text-xs mb-6 opacity-80 leading-relaxed">
-                    The target vault uses an AMM spot price to value collateral. Write an attacker contract that manipulates the AMM price, deposits collateral, and drains the vault.
+                    Analyze the target contract and its connected components. Find a way to make your collateral sufficient to borrow the vault's TRC. Use the provided attacker skeleton to build your exploit in Remix, deploy it, fund it using the interface below, execute the attack, and return here once the vault balance reaches zero.
                   </p>
 
-                  <div className="flex flex-col gap-2 mb-6">
-                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
-                      <span className="text-[10px] opacity-70 tracking-widest">TARGET INSTANCE</span>
-                      <span className="font-mono text-xs">{targetAddress}</span>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-6">
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">PLAYER TRC</span>
+                      <span className="font-mono text-[11px] text-[#00ff00] font-bold mt-1">{l2PlayerTrace !== undefined ? formatEther(l2PlayerTrace) : '---'}</span>
                     </div>
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">PLAYER MKT</span>
+                      <span className="font-mono text-[11px] text-[#00ff00] font-bold mt-1">{l2PlayerMkt !== undefined ? formatEther(l2PlayerMkt) : '---'}</span>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">VAULT TRC</span>
+                      <span className="font-mono text-[11px] text-red-500 font-bold mt-1">{l2VaultTrace !== undefined ? formatEther(l2VaultTrace) : '---'}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col justify-center">
+                      <span className="text-[10px] opacity-70 tracking-widest mb-2 border-b border-[#00ff00]/30 pb-1">AMM RESERVES</span>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="opacity-70">MKT:</span>
+                        <span className="font-mono text-[#00ff00]">{l2AmmReserveMkt !== undefined ? formatEther(l2AmmReserveMkt) : '---'}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs mt-1">
+                        <span className="opacity-70">TRC:</span>
+                        <span className="font-mono text-[#00ff00]">{l2AmmReserveTrace !== undefined ? formatEther(l2AmmReserveTrace) : '---'}</span>
+                      </div>
+                    </div>
+                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex flex-col justify-center">
+                      <span className="text-[10px] opacity-70 tracking-widest mb-2 border-b border-[#00ff00]/30 pb-1">ORACLE PRICE</span>
+                      <div className="flex items-center justify-center h-full">
+                        <span className="font-mono text-xs text-[#00ff00]">{l2OraclePrice !== undefined ? formatEther(l2OraclePrice) : '---'} TRC / MKT</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 mb-6">
                     <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
                       <span className="text-[10px] opacity-70 tracking-widest">MKT TOKEN</span>
                       <span className="font-mono text-xs">{l2MktAddress}</span>
@@ -671,6 +759,55 @@ export default function Home() {
                       <span className="text-[10px] opacity-70 tracking-widest">ORACLE</span>
                       <span className="font-mono text-xs">{l2OracleAddress}</span>
                     </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TARGET SOURCE</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(stripComments(LEVEL2_TARGET_SOURCE));
+                          addLog('> SOURCE_COPIED_TO_CLIPBOARD');
+                        }}
+                        className="text-[10px] border border-[#00ff00] hover:bg-[#00ff00] hover:text-black px-2 py-1 transition-colors"
+                      >
+                        [ COPY SOURCE ]
+                      </button>
+                    </div>
+                    <div className="border border-[#00ff00]/30 bg-[#00ff00]/5 text-[10px] tracking-widest p-2 opacity-70">
+                      Level2_OracleManipulation.sol
+                    </div>
+                    <textarea
+                      readOnly
+                      value={stripComments(LEVEL2_TARGET_SOURCE)}
+                      className="bg-black/50 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-64 resize-y outline-none focus:border-[#00ff00] transition-colors mb-4"
+                    />
+
+                    <span className="text-[10px] opacity-70 tracking-widest mt-2 mb-2">CONNECTED COMPONENTS</span>
+
+                    <details className="mb-2 border border-[#00ff00]/30 bg-[#00ff00]/5 group">
+                      <summary className="p-3 text-[10px] tracking-widest opacity-70 cursor-pointer hover:bg-[#00ff00]/10 outline-none select-none list-none [&::-webkit-details-marker]:hidden">
+                        <div className="flex justify-between items-center">
+                          <span>VulnerableOracle.sol</span>
+                          <span className="group-open:rotate-180 transition-transform">▼</span>
+                        </div>
+                      </summary>
+                      <div className="p-3 border-t border-[#00ff00]/30">
+                        <textarea readOnly value={stripComments(VULNERABLE_ORACLE_SOURCE)} className="bg-black/50 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-40 w-full resize-y outline-none focus:border-[#00ff00] transition-colors" />
+                      </div>
+                    </details>
+
+                    <details className="mb-2 border border-[#00ff00]/30 bg-[#00ff00]/5 group">
+                      <summary className="p-3 text-[10px] tracking-widest opacity-70 cursor-pointer hover:bg-[#00ff00]/10 outline-none select-none list-none [&::-webkit-details-marker]:hidden">
+                        <div className="flex justify-between items-center">
+                          <span>SimpleAMM.sol</span>
+                          <span className="group-open:rotate-180 transition-transform">▼</span>
+                        </div>
+                      </summary>
+                      <div className="p-3 border-t border-[#00ff00]/30">
+                        <textarea readOnly value={stripComments(SIMPLE_AMM_SOURCE)} className="bg-black/50 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-64 w-full resize-y outline-none focus:border-[#00ff00] transition-colors" />
+                      </div>
+                    </details>
                   </div>
 
                   <div className="flex flex-col gap-2 mb-6">
@@ -725,23 +862,48 @@ export default function Home() {
 
                   <p className="text-xs mb-6 opacity-80 leading-relaxed">
                     The backend signer provides valid signatures authorizing a 10 TRC withdrawal for your address.
-                    Since the signature is never invalidated (no nonce), you can replay it multiple times to drain the vault. Write an attacker contract to exploit this via Remix.
+                    Analyze the target contract and identify a way to drain the vault. Request the provided authorization payload, then build an attacker contract in Remix to exploit the target. Return here once the vault balance reaches zero.
                   </p>
 
-                  <div className="flex flex-col gap-2 mb-6">
-                    <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
-                      <span className="text-[10px] opacity-70 tracking-widest">TARGET INSTANCE</span>
-                      <span className="font-mono text-xs">{targetAddress}</span>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-6">
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">PLAYER TRC BALANCE</span>
+                      <span className="font-mono text-[11px] text-[#00ff00] font-bold mt-1">{l3PlayerTrace !== undefined ? formatEther(l3PlayerTrace) : '---'} TRC</span>
                     </div>
+                    <div className="border border-[#00ff00]/30 p-2 bg-[#00ff00]/5 flex flex-col items-center justify-center text-center">
+                      <span className="text-[9px] opacity-70 tracking-widest">VAULT TRC BALANCE</span>
+                      <span className="font-mono text-[11px] text-red-500 font-bold mt-1">{l3VaultTrace !== undefined ? formatEther(l3VaultTrace) : '---'} TRC</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 mb-6">
                     <div className="border border-[#00ff00]/30 p-3 bg-[#00ff00]/5 flex justify-between items-center">
                       <span className="text-[10px] opacity-70 tracking-widest">TRACE TOKEN</span>
                       <span className="font-mono text-xs">{l3TraceAddress as string}</span>
                     </div>
                   </div>
 
-                  <div className="border border-red-500/50 p-3 bg-red-500/5 mb-6 flex justify-between items-center">
-                    <span className="text-[10px] text-red-500 tracking-widest font-bold">TARGET VAULT BALANCE</span>
-                    <span className="text-red-500 font-bold font-mono">{l3VaultTrace ? formatEther(l3VaultTrace) : '---'} TRC</span>
+                  <div className="flex flex-col gap-2 mb-6">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] opacity-70 tracking-widest">TARGET SOURCE</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(stripComments(LEVEL3_TARGET_SOURCE));
+                          addLog('> SOURCE_COPIED_TO_CLIPBOARD');
+                        }}
+                        className="text-[10px] border border-[#00ff00] hover:bg-[#00ff00] hover:text-black px-2 py-1 transition-colors"
+                      >
+                        [ COPY SOURCE ]
+                      </button>
+                    </div>
+                    <div className="border border-[#00ff00]/30 bg-[#00ff00]/5 text-[10px] tracking-widest p-2 opacity-70">
+                      Level3_SignatureReplay.sol
+                    </div>
+                    <textarea
+                      readOnly
+                      value={stripComments(LEVEL3_TARGET_SOURCE)}
+                      className="bg-black/50 border border-[#00ff00]/30 p-3 font-mono text-[10px] sm:text-xs h-64 resize-y outline-none focus:border-[#00ff00] transition-colors mb-4"
+                    />
                   </div>
 
                   <div className="flex flex-col gap-4 mb-6">

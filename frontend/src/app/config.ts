@@ -1,7 +1,7 @@
 import { parseAbi } from 'viem';
 
 export const CTF_FACTORY_ADDRESS =
-  '0xE20Fe28893a510feA8335a135FbA9374a7C2e96D';
+  '0x350B35411F440dB246A626f838df08C9a0D340Fc';
 
 export const CTF_FACTORY_ABI = parseAbi([
   'function deployLevel1() external returns (address)',
